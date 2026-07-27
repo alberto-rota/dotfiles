@@ -1,0 +1,152 @@
+#!/bin/bash
+
+# Rsync function for syncing between orion and proxima
+# Usage: sync_mono3d [path] --from|-f [machine] --to|-t [machine]
+# Example: sync_mono3d /home/alberto/MONO3D --from orion --to proxima
+# Example: sync_mono3d . -f proxima -t orion
+
+syncop() {
+    local path="."
+    local from_machine=""
+    local to_machine=""
+    local dry_run=false
+    
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --from|-f)
+                from_machine="$2"
+                shift 2
+                ;;
+            --to|-t)
+                to_machine="$2"
+                shift 2
+                ;;
+            --dry-run)
+                dry_run=true
+                shift
+                ;;
+            --help|-h)
+                echo "Usage: sync_mono3d [path] --from|-f [machine] --to|-t [machine] [--dry-run]"
+                echo ""
+                echo "Arguments:"
+                echo "  path              Path to sync (default: current directory '.')"
+                echo "  --from, -f        Source machine (orion|proxima|local)"
+                echo "  --to, -t          Destination machine (orion|proxima|local)"
+                echo "  --dry-run         Show what would be synced without actually doing it"
+                echo "  --help, -h        Show this help message"
+                echo ""
+                echo "Examples:"
+                echo "  sync_mono3d /home/alberto/MONO3D --from orion --to proxima"
+                echo "  sync_mono3d . -f proxima -t orion"
+                echo "  sync_mono3d --from local --to orion --dry-run"
+                return 0
+                ;;
+            -*)
+                echo "Error: Unknown option $1"
+                echo "Use --help for usage information"
+                return 1
+                ;;
+            *)
+                # First non-option argument is the path
+                if [[ -z "$path" || "$path" == "." ]]; then
+                    path="$1"
+                fi
+                shift
+                ;;
+        esac
+    done
+    
+    # Validate required arguments
+    if [[ -z "$from_machine" ]]; then
+        echo "Error: --from/-f argument is required"
+        echo "Use --help for usage information"
+        return 1
+    fi
+    
+    if [[ -z "$to_machine" ]]; then
+        echo "Error: --to/-t argument is required"
+        echo "Use --help for usage information"
+        return 1
+    fi
+    
+    # Validate machine names
+    local valid_machines="orion proxima local"
+    if [[ ! " $valid_machines " =~ " $from_machine " ]]; then
+        echo "Error: Invalid source machine '$from_machine'. Must be one of: $valid_machines"
+        return 1
+    fi
+    
+    if [[ ! " $valid_machines " =~ " $to_machine " ]]; then
+        echo "Error: Invalid destination machine '$to_machine'. Must be one of: $valid_machines"
+        return 1
+    fi
+    
+    if [[ "$from_machine" == "$to_machine" ]]; then
+        echo "Error: Source and destination machines cannot be the same"
+        return 1
+    fi
+    
+    # Build rsync command
+    local rsync_cmd="rsync -avz --progress"
+    
+    if [[ "$dry_run" == true ]]; then
+        rsync_cmd="$rsync_cmd --dry-run"
+    fi
+    
+    # Construct source and destination paths
+    local source_path=""
+    local dest_path=""
+    
+    # Handle source path
+    if [[ "$from_machine" == "local" ]]; then
+        source_path="$path"
+    else
+        source_path="$from_machine:$path"
+    fi
+    
+    # Handle destination path
+    if [[ "$to_machine" == "local" ]]; then
+        dest_path="$path"
+    else
+        dest_path="$to_machine:$path"
+    fi
+    
+    # Ensure source path ends with / for directory contents sync
+    if [[ -d "${path%/}" ]] || [[ "$from_machine" != "local" ]]; then
+        if [[ "${source_path}" != */ ]]; then
+            source_path="${source_path}/"
+        fi
+        if [[ "${dest_path}" != */ ]]; then
+            dest_path="${dest_path}/"
+        fi
+    fi
+    
+    # Display what we're about to do
+    echo "Syncing from $from_machine to $to_machine"
+    echo "Command: $rsync_cmd \"$source_path\" \"$dest_path\""
+    
+    if [[ "$dry_run" == true ]]; then
+        echo "DRY RUN - No files will be transferred"
+    fi
+    
+    echo "----------------------------------------"
+    
+    # Execute the rsync command
+    eval "$rsync_cmd \"$source_path\" \"$dest_path\""
+    local exit_code=$?
+    
+    if [[ $exit_code -eq 0 ]]; then
+        echo "----------------------------------------"
+        if [[ "$dry_run" == true ]]; then
+            echo "Dry run completed successfully"
+        else
+            echo "Sync completed successfully"
+        fi
+    else
+        echo "----------------------------------------"
+        echo "Sync failed with exit code: $exit_code"
+        return $exit_code
+    fi
+}
+
