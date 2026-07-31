@@ -17,7 +17,7 @@
             },
             "leading_diamond": "",
             "trailing_diamond": "",
-            "template": "{{ if .Env.SLURM_JOB_NAME }}<#03a1fc></> {{else}}<#ffea02></> {{end}}<#ffea02>alex </>",
+            "template": "{{ if .Env.SLURM_JOB_NAME }}<@SECONDARY@></> {{else}}<@SECONDARY@></> {{end}}<@PRIMARY@>@MACHINE_LOWER@ </>",
             "foreground": "#000000",
             "background": "#212224",
             "type": "text",
@@ -454,11 +454,11 @@
               "cache_duration": "none"
             },
             "template": " \ue285\ue285",
-            "foreground": "#ffea02",
+            "foreground": "@PRIMARY@",
             "type": "status",
             "style": "plain",
             "foreground_templates": [
-              "#ffea02"
+              "@SECONDARY@"
             ]
           }
         ],

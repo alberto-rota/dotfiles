@@ -1,0 +1,23 @@
+#>> TEMPLATE ONLY -- install.sh strips this block when it renders the file.
+#>> Rendered to ~/.config/herdr/plugins/config/herdr-file-viewer/config.toml with
+#>> @HERDR_CONFIG@ substituted for that machine's herdr config dir. This is the one
+#>> file here that is generated rather than symlinked: the glow style below must be
+#>> an ABSOLUTE path (the plugin runs these commands without a shell, so neither ~
+#>> nor $HOME is expanded), and a path baked for one machine's $HOME would silently
+#>> fall back to glow's default palette on any other. Edit THIS file, not the
+#>> rendered one, then re-run install.sh.
+# All three content renderers on Monokai, so the viewer's content pane reads as
+# one palette. Note the DOUBLE quotes around the theme names: the plugin splits
+# these command strings itself (src/editor.rs tokenize_command) and honours only
+# double quotes -- single quotes are kept as literal characters, so the previous
+# --theme='Monokai Extended' reached bat as two broken arguments.
+#
+# Syntax-highlighted code view.
+syntax = 'bat --color=always --style=numbers --paging=never --theme="Monokai Extended" --file-name={name} -'
+
+# Diffs. delta reads bat's theme set, so the same Monokai applies.
+diff = 'delta --syntax-theme="Monokai Extended" --true-color=always'
+
+# Rendered markdown. glow has no Monokai built in, so this points at a Monokai
+# palette translated from the plugin's bundled assets/markdown-style.json.
+markdown = 'glow -s @HERDR_CONFIG@/plugins/config/herdr-file-viewer/markdown-monokai.json -w 0 -'

@@ -1,4 +1,6 @@
 #!/bin/bash
+#>> TEMPLATE -- rendered by install.sh with @PRIMARY@ / @SECONDARY@ substituted.
+#>> Edit THIS file, not ~/.tmux/other-sessions.sh. #>> lines are stripped.
 # List ALL tmux sessions ordered by session index; style current vs others.
 # Current: blue block + black bold name. Others: blue slant pair + black on yellow name.
 current=$(tmux display-message -p '#S')
@@ -9,9 +11,9 @@ while IFS= read -r line; do
     name="${line#* }"
     if [ "$name" = "$current" ]; then
         # Current session: same style as main status (#S) — blue block, black bold name
-        printf '#[fg=#ffea02,bg=#03a1fc]%s#[fg=#000000,bg=#03a1fc,bold] %s #[fg=#03a1fc,bg=#ffea02,nobold]%s' "$sep" "$name" "$sep"
+        printf '#[fg=@PRIMARY@,bg=@SECONDARY@]%s#[fg=#000000,bg=@SECONDARY@,bold] %s #[fg=@SECONDARY@,bg=@PRIMARY@,nobold]%s' "$sep" "$name" "$sep"
     else
         # Other sessions: blue slanted pair then black on yellow name
-        printf '#[fg=#ffea02,bg=#03a1fc]%s#[fg=#03a1fc,bg=#ffea02]%s #[fg=#000000,bg=#ffea02]%s ' "$sep" "$sep" "$name"
+        printf '#[fg=@PRIMARY@,bg=@SECONDARY@]%s#[fg=@SECONDARY@,bg=@PRIMARY@]%s #[fg=#000000,bg=@PRIMARY@]%s ' "$sep" "$sep" "$name"
     fi
 done < <(tmux list-sessions -F '#{session_id} #{session_name}' | sort -t'$' -k2 -n)

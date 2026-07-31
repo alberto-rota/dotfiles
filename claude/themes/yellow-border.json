@@ -1,8 +1,0 @@
-{
-  "name": "alex theme",
-  "base": "dark",
-  "overrides": {
-    "promptBorder": "#ffff00",
-    "clawd_body": "#FFEA02"
-  }
-}

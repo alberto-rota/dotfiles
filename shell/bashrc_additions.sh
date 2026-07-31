@@ -58,6 +58,7 @@ command -v eza >/dev/null 2>&1 && alias ls="eza $@ -lh --tree --level=1 --git --
 #===============================================================================================================================
 export TERM=tmux-256color
 export COLORTERM=truecolor
+export TMUX_TMPDIR="$HOME/.tmux"
 tma() {
   tmux attach -t$1
 }
@@ -67,14 +68,6 @@ tmc() {
   tmux new-session -s "$name" -t "$tag"
 }
 alias tml="tmux ls"
-# Auto-attach to tmux session for all terminal sessions
-if [[ -z "$TMUX" ]] && [[ $- == *i* ]]; then
-    if tmux has-session -t alex 2>/dev/null; then
-        tmux attach-session -t alex
-    else
-        tmux new-session -s alex
-    fi
-fi
 #===============================================================================================================================
 
 # ---- User Jupyter runtime (no systemd /run) ----
@@ -83,7 +76,6 @@ export JUPYTER_RUNTIME_DIR="$HOME/.local/share/jupyter/runtime"
 export IPYTHONDIR="$HOME/.ipython"
 export XDG_CACHE_HOME="$HOME/.cache"
 # -----------------------------------------------
-export TMUX_TMPDIR="$HOME/.tmux"
 
 export no_proxy=localhost,127.0.0.1
 export NO_PROXY=localhost,127.0.0.1

@@ -1,5 +1,15 @@
+#>> TEMPLATE -- install.sh renders this to dotfiles/.generated/tmux/.tmux.conf and
+#>> points ~/.tmux.conf at it, substituting @PRIMARY@ / @SECONDARY@ / @MACHINE@ with
+#>> this machine's answers. Edit THIS file, then re-run ./install.sh (which reuses the
+#>> saved answers, so it needs no input). Lines starting with #>> are stripped.
+
 # Bindings
 bind k killw
+
+# Prefix + s + \ : vertical split | Prefix + s + - : horizontal split
+bind s switch-client -T split_keys
+bind -T split_keys '\' split-window -h -c "#{pane_current_path}"
+bind -T split_keys '-' split-window -v -c "#{pane_current_path}"
 set-option -g focus-events on
 set -g mouse on
 bind m set -g mouse on \; display 'Mouse: ON'
@@ -12,11 +22,11 @@ bind j display-popup -w 95% -h 85% -E "watch -c -n 1 'jruns; jqueue;'"
 bind g display-popup -w 95% -h 85% "gc"
 
 # Pane borders (yellow, matching theme)
-set -g pane-border-style "fg=#ffea02"
-set -g pane-active-border-style "fg=#ffea02"
+set -g pane-border-style "fg=@PRIMARY@"
+set -g pane-active-border-style "fg=@PRIMARY@"
 
 # Set a border style (options: single, double, heavy, rounded, none)
-set -g popup-border-style "fg=#ffea02"
+set -g popup-border-style "fg=@PRIMARY@"
 set -g popup-border-lines "double"
 # Prefix + h: Quick system monitor (closes when you press 'q' in htop)
 bind h display-popup -w 80% -h 70% -E "htop"
@@ -34,30 +44,31 @@ set -g set-clipboard on
 set -as terminal-features ',*:clipboard'
 
 # --- Session chooser / copy-mode selection highlight ---
-set -g mode-style "fg=#000000,bg=#ffea02,bold"
+set -g mode-style "fg=#000000,bg=@PRIMARY@,bold"
 
-# --- Primary and secondary colors (defined here, not from shell env) ---
+# --- Primary and secondary colors come from @PRIMARY@ / @SECONDARY@, which
+#     install.sh substitutes when it renders this template. ---
 
 # --- Status Bar General ---
 set -g status-interval 1
 set -g status-position bottom
-set -g status-style "bg=#ffea02"
+set -g status-style "bg=@PRIMARY@"
 
 # --- Command prompt (prefix+:): blue status/message line ---
-set -g message-style "fg=#000000,bg=#03a1fc,bold"
-set -g message-command-style "fg=#000000,bg=#03a1fc,bold"
+set -g message-style "fg=#000000,bg=@SECONDARY@,bold"
+set -g message-command-style "fg=#000000,bg=@SECONDARY@,bold"
 
 # --- LEFT SIDE: #I then all sessions in tmux order (same as prefix-s); current=blue, others=blue slant + yellow ---
 set -g status-left-length 120
-set -g status-left "#[fg=#ffea02,bg=#000000]#[fg=#ffffff,bg=#000000,bold] #I #[fg=#000000,bg=#ffea02]#(~/.tmux/other-sessions.sh)"
+set -g status-left "#[fg=@PRIMARY@,bg=#000000]#[fg=#ffffff,bg=#000000,bold] @MACHINE@ #[fg=#000000,bg=@PRIMARY@]#(~/.tmux/other-sessions.sh)"
 
 # --- WINDOW LIST: Center ---
-setw -g window-status-format ""  #[fg=#ffea02,bg=#ffea02] "
-setw -g window-status-current-format "" #[fg=#ffea02,bg=#000000]#[fg=#ffffff,bg=#000000,bold] #[fg=#000000,bg=#ffea02]"
+setw -g window-status-format ""  #[fg=@PRIMARY@,bg=@PRIMARY@] "
+setw -g window-status-current-format "" #[fg=@PRIMARY@,bg=#000000]#[fg=#ffffff,bg=#000000,bold] #[fg=#000000,bg=@PRIMARY@]"
 
 # --- RIGHT SIDE: Slurm + Time + Date ---
 set -g status-right-length 150
-set -g status-right "#[fg=#ffea02,bg=#000000]#[fg=#ffffff,bg=#00000t0] #(~/.tmux/slurm-status.sh) #[fg=#000000,bg=#ffea02]#[fg=#000000,bg=#ffea02,bold] %H:%M #[fg=#000000,bg=#ffea02,bold] %Y-%m-%d #[fg=#ffea02,bg=#000000] "
+set -g status-right "#[fg=@PRIMARY@,bg=#000000]#[fg=#ffffff,bg=#00000t0] #(~/.tmux/slurm-status.sh)#[fg=#000000,bg=@PRIMARY@]#[fg=#000000,bg=@PRIMARY@,bold] %H:%M #[fg=#000000,bg=@PRIMARY@,bold] %Y-%m-%d #[fg=@PRIMARY@,bg=#000000] "
 
 # --- RELOAD BINDING ---
 bind r source-file ~/.tmux.conf \; display "Config reloaded"

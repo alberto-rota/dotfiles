@@ -3,3 +3,4 @@ clear
 source ~/.bashrc
 export POSH_PATH="$HOME/.cache/oh-my-posh/themes/albe-monokai2.omp.json"
 command -v oh-my-posh >/dev/null 2>&1 && eval "$(oh-my-posh init bash --config "$POSH_PATH")"
+. "$HOME/.cargo/env"

@@ -24,7 +24,7 @@
     "accent4": "#fc9867",
     "ui.background": "#221f22",
     "ui.surface": "#2d2a2e",
-    "ui.border": "#ffea02",
+    "ui.border": "@PRIMARY@",
     "ui.text": "#fcfcfa",
     "ui.textSecondary": "#c1c0c0",
     "ui.textMuted": "#727072",

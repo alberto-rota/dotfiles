@@ -1,11 +1,13 @@
 #!/bin/bash
+#>> TEMPLATE -- rendered by install.sh with @PRIMARY@ substituted.
+#>> Edit THIS file, not ~/.tmux/slurm-status.sh. #>> lines are stripped.
 
 # Fetching jobs: %j is name, %t is state
 # head -n 3 keeps the bar from getting too long
 JOBS=$(squeue --me --noheader --format="%j|%t" 2>/dev/null | head -n 16)
 
 if [ -z "$JOBS" ]; then
-    echo "#[fg=#555555,bg=#000000] no jobs "
+    echo "" #[fg=#555555,bg=#000000]"
     exit 0
 fi
 
@@ -15,9 +17,9 @@ while IFS='|' read -r name state; do
     short_name=$(echo "$name" | cut -c1-7)
     
     if [ "$state" == "R" ]; then
-        OUTPUT+="#[fg=#000000,bg=#00ff00]#[fg=#00ff00,bg=#000000] $short_name "
+        OUTPUT+="#[fg=#000000,bg=@PRIMARY@]#[fg=@PRIMARY@,bg=#000000] $short_name "
     elif [ "$state" == "PD" ]; then
-        OUTPUT+="#[fg=#000000,bg=#ffea02]#[fg=#ffea02,bg=#000000] $short_name "
+        OUTPUT+="#[fg=#000000,bg=@PRIMARY@]#[fg=@PRIMARY@,bg=#000000] $short_name "
     fi
 done <<< "$JOBS"
 
