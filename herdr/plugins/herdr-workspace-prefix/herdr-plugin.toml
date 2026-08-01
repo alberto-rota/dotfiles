@@ -1,0 +1,28 @@
+id = "herdr-workspace-prefix"
+name = "Workspace prefix"
+version = "0.1.0"
+min_herdr_version = "0.7.0"
+description = "Keep a literal prefix token on every workspace, for the sidebar to render"
+platforms = ["linux", "macos"]
+
+# herdr's sidebar rows only accept KNOWN tokens -- a literal string in `rows` is
+# rejected with "unknown sidebar token; custom tokens must start with `$`". The
+# one way to put fixed text in front of a workspace name is therefore to report
+# it as workspace metadata and render it as a $token. The same trick carries the
+# focus-dependent styling: the token STYLE is fixed in config.toml, so the feeder
+# swaps WHICH token a workspace holds ($aa/$name when idle, $bb/$name_active when
+# focused) and exactly one of each pair renders.
+#
+# Metadata is display-only and lives in the running server (it is absent from
+# session.json), so it has to be re-seeded every start -- hence [[startup]] --
+# and pushed to workspaces created later, which is what the loop inside the
+# script handles.
+[[startup]]
+command = ["python3", "tag-workspaces.py", "watch"]
+
+# Manual re-seed, in case the loop was ever stopped.
+[[actions]]
+id = "retag"
+title = "Re-apply workspace prefixes"
+contexts = ["workspace"]
+command = ["python3", "tag-workspaces.py", "once"]

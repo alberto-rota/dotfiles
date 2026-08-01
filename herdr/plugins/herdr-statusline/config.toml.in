@@ -1,0 +1,38 @@
+#>> TEMPLATE -- rendered by install.sh with @PRIMARY@ / @SECONDARY@ / @MACHINE@
+#>> substituted. Edit THIS file, not the rendered config. #>> lines are stripped.
+#>>
+#>> This is the tmux status line of tmux/.tmux.conf.in, segment for segment, so a
+#>> herdr session under `hsl` looks like a tmux session -- minus the session list.
+#>> The left half never repeats session/workspace names (the tmux bar lists
+#>> sessions because tmux has nowhere else to show them; herdr's sidebar already
+#>> names every workspace, so repeating them here would be the same information
+#>> twice). Both halves are built entirely from @HSL_STATUS_LEFT@ /
+#>> @HSL_STATUS_RIGHT@, which install.sh assembles from the same SHOW_HOST /
+#>> SHOW_GPU / SHOW_TEMP / SHOW_SLURM / SHOW_DATETIME toggles as tmux's bar, so
+#>> the two can never drift apart -- see the "status line assembly" section
+#>> there. The GPU and Slurm scripts are the very same rendered files, symlinked
+#>> into this config dir a second time.
+enabled = true
+
+[statusline]
+# --- Status Bar General ---
+status = "on"
+status_interval = 1
+status_position = "bottom"
+status_justify = "left"
+status_style = "bg=@PRIMARY@"
+
+# --- LEFT SIDE: the user@machine pill (if SHOW_HOST), and nothing else ---
+# Built by install.sh into @HSL_STATUS_LEFT@ -- see the header comment.
+status_left_length = 120
+status_left = "@HSL_STATUS_LEFT@"
+
+# --- WINDOW LIST: empty, as in tmux. The hsl server has exactly one window and
+#     the tmux config hides its window list too, so both bars show nothing here.
+window_status_format = ""
+window_status_current_format = ""
+
+# --- RIGHT SIDE: GPU + Slurm + Time + Date, whichever SHOW_* toggles enable.
+# Built by install.sh into @HSL_STATUS_RIGHT@ -- see the header comment.
+status_right_length = 200
+status_right = "@HSL_STATUS_RIGHT@"

@@ -1,0 +1,92 @@
+#!/bin/bash
+#>> TEMPLATE -- rendered by install.sh with @PRIMARY@ / @SHOW_TEMP@ substituted.
+#>> Edit THIS file, not the rendered copy in dotfiles/.generated/. #>> lines are stripped.
+#>>
+#>> A GPU pill for the status bar's right half: utilisation and occupied memory,
+#>> each as a small block-character progress bar. Printed in the same pill shape
+#>> the slurm segment uses, so it sits in the bar without a style of its own.
+
+# No GPU on this machine (the FAU login node, a laptop): print nothing at all.
+# The same config is installed everywhere, so the segment has to disappear
+# cleanly rather than show an error or an empty bar.
+command -v nvidia-smi >/dev/null 2>&1 || exit 0
+
+# Sub-toggle of the GPU pill itself (see install.sh's SHOW_TEMP): the pill
+# always shows utilisation/memory, this only gates the temperature reading.
+SHOW_TEMP=@SHOW_TEMP@
+
+BAR_WIDTH=8
+FILL_CHAR="▰"
+EMPTY_CHAR="▱"
+# The temperature reading's capsule icon -- the bars below are now a plain run
+# of FILL_CHAR/EMPTY_CHAR cells, no end caps.
+# Written as \u escapes because they are private-use glyphs that do not survive
+# every copy/paste; U+E0B6/U+E0B4 are Powerline Extra's half-circle pair.
+CAP_LEFT=$''
+CAP_RIGHT=$''
+
+# One query for everything the device knows: mean utilisation across GPUs, summed
+# used/total memory, and the HOTTEST temperature -- a mean would hide the one card
+# that is throttling, which is the only reason to show a temperature at all.
+# `--format=nounits` still prints "[N/A]" for fields a device does not expose,
+# hence the numeric guard; a device with no temperature reports -1 and the segment
+# simply leaves it off.
+read -r NGPU UTIL USED TOTAL TEMP <<<"$(
+  nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu \
+             --format=csv,noheader,nounits 2>/dev/null |
+  awk -F', *' '
+    function num(x) { return (x ~ /^[0-9]+(\.[0-9]+)?$/) ? x + 0 : -1 }
+    BEGIN { temp = -1 }
+    { n++; u += num($1); mu = num($2); mt = num($3); tp = num($4)
+      if (mu >= 0) used += mu; else used = -1e9
+      if (mt >= 0) total += mt; else total = -1e9
+      if (tp > temp) temp = tp }
+    END { if (!n) exit 1
+          printf "%d %d %d %d %d\n", n, u / n + 0.5, (used < 0 ? -1 : used), (total < 0 ? -1 : total), temp }'
+)" || exit 0
+
+# Unified-memory parts (GB10 / Jetson) report no device memory at all: the GPU
+# carves its allocations out of system RAM, so the honest denominator is
+# MemTotal, and the numerator is the sum over the compute processes.
+if [ "${TOTAL:-0}" -le 0 ]; then
+  TOTAL=$(awk '/^MemTotal:/ { printf "%d", $2 / 1024 }' /proc/meminfo)
+  USED=$(nvidia-smi --query-compute-apps=used_memory --format=csv,noheader,nounits 2>/dev/null |
+         awk '{ s += ($1 ~ /^[0-9]+$/) ? $1 : 0 } END { printf "%d", s }')
+fi
+
+[ "${TOTAL:-0}" -gt 0 ] && [ "${USED:-0}" -ge 0 ] || { USED=0; TOTAL=0; }
+MEM_PCT=0
+[ "$TOTAL" -gt 0 ] && MEM_PCT=$(( (USED * 100 + TOTAL / 2) / TOTAL ))
+
+# A bar of BAR_WIDTH cells: filled cells in the theme colour, the rest dim, both
+# on the pill's black background.
+bar() {
+  local pct="$1" filled i out=""
+  [ "$pct" -lt 0 ] && pct=0
+  [ "$pct" -gt 100 ] && pct=100
+  filled=$(( (pct * BAR_WIDTH + 50) / 100 ))
+  out="#[fg=@PRIMARY@,bg=#000000]"
+  for (( i = 0; i < BAR_WIDTH; i++ )); do
+    [ "$i" -eq "$filled" ] && out+="#[fg=#555555,bg=#000000]"
+    out+=$([ "$i" -lt "$filled" ] && echo "$FILL_CHAR" || echo "$EMPTY_CHAR")
+  done
+  printf '%s#[fg=@PRIMARY@,bg=#000000]' "$out"
+}
+
+# GiB with one decimal below 10, none above -- keeps the pill a stable width.
+gib() {
+  awk -v m="$1" 'BEGIN { g = m / 1024; printf (g < 10 ? "%.1f" : "%.0f"), g }'
+}
+
+LABEL="GPU"
+[ "${NGPU:-1}" -gt 1 ] && LABEL="GPU×$NGPU"
+
+printf '#[fg=#000000,bg=@PRIMARY@]#[fg=@PRIMARY@,bg=#000000] %s ' "$LABEL"
+bar "$UTIL"
+printf ' %3d%%  ' "$UTIL"
+bar "$MEM_PCT"
+printf ' %s/%sG ' "$(gib "$USED")" "$(gib "$TOTAL")"
+# The rounded caps, printed back to back as a small capsule icon in front of the
+# reading -- in peach, so both the icon and the temperature it marks stand out
+# from the primary-coloured util/mem figures.
+[ "$SHOW_TEMP" = 1 ] && [ "${TEMP:--1}" -ge 0 ] && printf '#[fg=#fc9867,bg=#000000]%s%s %d° ' "$CAP_LEFT" "$CAP_RIGHT" "$TEMP"

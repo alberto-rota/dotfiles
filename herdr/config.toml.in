@@ -1,5 +1,5 @@
-#>> TEMPLATE -- rendered by install.sh with @PRIMARY@ / @SECONDARY@ / @SECONDARY_DIM@
-#>> substituted. Edit THIS file, not the rendered config. #>> lines are stripped.
+#>> TEMPLATE -- rendered by install.sh with @PRIMARY@ / @PRIMARY_DIM@ substituted.
+#>> Edit THIS file, not the rendered config. #>> lines are stripped.
 
 [[keys.command]]
 key = "prefix+f"
@@ -20,36 +20,19 @@ delivery = "herdr"
 show_agent_labels_on_pane_borders = true
 accent = "@PRIMARY@"
 
-# Echo the pane-border green into the sidebar itself, on the workspace name
-# (the primary nav label in both the agents and spaces rows) so the accent
-# reads as one consistent brand color instead of only living on borders.
+# The sidebar keeps herdr's default rows. The only thing themed is `surface_dim`,
+# which is the one token herdr routes BOTH the sidebar rail/borders AND the
+# selected workspace's background overlay through -- there is no separate border
+# color in the [theme.custom] set.
 #
-# Green marks identity (the workspace name) on both rows. The second line keeps
-# the theme's own colors: orange moved to the selection overlay below, and
-# orange-on-orange would be unreadable on the selected row.
-[ui.sidebar.agents]
-rows = [["state_icon", { token = "workspace", fg = "@PRIMARY@", bold = true }, "tab"], ["agent"]]
-
-[ui.sidebar.spaces]
-rows = [["state_icon", { token = "workspace", fg = "@PRIMARY@", bold = true }], ["branch", "git_status"]]
-
+# It is a DARKENED primary, not the raw one: the selected row's name is drawn on
+# top of this color, and raw @PRIMARY@ would leave that text at ~1.4:1.
+# install.sh scales the primary 50% toward black (same hue), which measures
+# ~4.5:1 for the name on the selected row and ~2.8:1 for the rail against the
+# gruvbox panel.
 [theme]
 name = "gruvbox"
 auto_switch = false
 
-# Overrides on top of the "gruvbox" base theme to match the tmux statusline, which
-# install.sh renders from the same primary/secondary pair. "green" and "peach" are
-# gruvbox's own slot names, not a claim about the hue -- they are just the two slots
-# herdr routes the accent and the selection overlay through.
 [theme.custom]
-accent = "@PRIMARY@"
-green = "@PRIMARY@"
-peach = "@SECONDARY@"
-# One token drives BOTH the selected row's background overlay and the sidebar
-# rail/separators -- herdr has no separate selection color, so the rail pays the
-# price of wanting a secondary-colored overlay. install.sh darkens the secondary
-# (same hue, scaled toward black) rather than using it raw: at full brightness the
-# primary-colored workspace names sitting on top fall to ~2:1 contrast, where the
-# darkened version holds around 4:1 and still reads as a visible rail against the
-# gruvbox panel.
-surface_dim = "@SECONDARY_DIM@"
+surface_dim = "@PRIMARY_DIM@"

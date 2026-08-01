@@ -58,17 +58,20 @@ set -g status-style "bg=@PRIMARY@"
 set -g message-style "fg=#000000,bg=@SECONDARY@,bold"
 set -g message-command-style "fg=#000000,bg=@SECONDARY@,bold"
 
-# --- LEFT SIDE: #I then all sessions in tmux order (same as prefix-s); current=blue, others=blue slant + yellow ---
+# --- LEFT SIDE: host pill (if SHOW_HOST) then all sessions in tmux order (same
+#     as prefix-s). Assembled in install.sh from the SHOW_* toggles, since
+#     tmux.conf has no conditional syntax to gate a segment on -- see the
+#     "status line assembly" section there.
 set -g status-left-length 120
-set -g status-left "#[fg=@PRIMARY@,bg=#000000]#[fg=#ffffff,bg=#000000,bold] @MACHINE@ #[fg=#000000,bg=@PRIMARY@]#(~/.tmux/other-sessions.sh)"
+set -g status-left "@TMUX_STATUS_LEFT@"
 
 # --- WINDOW LIST: Center ---
 setw -g window-status-format ""  #[fg=@PRIMARY@,bg=@PRIMARY@] "
 setw -g window-status-current-format "" #[fg=@PRIMARY@,bg=#000000]#[fg=#ffffff,bg=#000000,bold] #[fg=#000000,bg=@PRIMARY@]"
 
-# --- RIGHT SIDE: Slurm + Time + Date ---
-set -g status-right-length 150
-set -g status-right "#[fg=@PRIMARY@,bg=#000000]#[fg=#ffffff,bg=#00000t0] #(~/.tmux/slurm-status.sh)#[fg=#000000,bg=@PRIMARY@]#[fg=#000000,bg=@PRIMARY@,bold] %H:%M #[fg=#000000,bg=@PRIMARY@,bold] %Y-%m-%d #[fg=@PRIMARY@,bg=#000000] "
+# --- RIGHT SIDE: GPU + Slurm + Time + Date, whichever SHOW_* toggles enable ---
+set -g status-right-length 200
+set -g status-right "@TMUX_STATUS_RIGHT@"
 
 # --- RELOAD BINDING ---
 bind r source-file ~/.tmux.conf \; display "Config reloaded"

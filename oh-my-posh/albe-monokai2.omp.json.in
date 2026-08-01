@@ -17,7 +17,7 @@
             },
             "leading_diamond": "",
             "trailing_diamond": "",
-            "template": "{{ if .Env.SLURM_JOB_NAME }}<@SECONDARY@></> {{else}}<@SECONDARY@></> {{end}}<@PRIMARY@>@MACHINE_LOWER@ </>",
+            "template": "{{ if .Env.SLURM_JOB_NAME }}<@OMP_ICON_COLOR@></> {{else}}<@OMP_ICON_COLOR@></> {{end}}<@OMP_TEXT_COLOR@>@MACHINE_LOWER@ </>",
             "foreground": "#000000",
             "background": "#212224",
             "type": "text",
@@ -454,11 +454,11 @@
               "cache_duration": "none"
             },
             "template": " \ue285\ue285",
-            "foreground": "@PRIMARY@",
+            "foreground": "@OMP_CHEVRON_FG@",
             "type": "status",
             "style": "plain",
             "foreground_templates": [
-              "@SECONDARY@"
+              "@OMP_CHEVRON_ERR@"
             ]
           }
         ],
