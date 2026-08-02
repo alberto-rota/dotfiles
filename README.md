@@ -1,12 +1,30 @@
 # dotfiles
 
-Personal machine config, synced across machines. Run `./install.sh` on a
-new machine: it installs [uv](https://astral.sh/uv) first, opens a small
-setup UI to pick the two accent colours, the machine name, which status
-line components to show, how oh-my-posh applies its accents and which tools
-to put on the machine — with live previews of the prompt, the status bars,
-herdr and the install plan — then installs the lot (idempotent, backs up any
-real file it would overwrite as `<file>.bak`).
+Personal machine config, synced across machines. On a brand new machine, one
+line is the whole thing:
+
+```
+curl -fsSL albertorota.dev/install.sh | bash
+```
+
+There is no checkout to run from at that point, so the script clones this
+repo to `~/dotfiles` and hands over to the copy inside it — then carries on
+exactly as a local run would. (No git on the machine yet? It falls back to a
+release tarball; git itself is one of the tools it installs.) Pass options
+through with `bash -s --`, and override where it lands with `DOTFILES_DIR`:
+
+```
+curl -fsSL albertorota.dev/install.sh | bash -s -- --no-tools
+curl -fsSL albertorota.dev/install.sh | DOTFILES_DIR=~/cfg bash
+```
+
+From a clone it's just `./install.sh`. Either way it installs
+[uv](https://astral.sh/uv) first, opens a small setup UI to pick the two
+accent colours, the machine name, which status line components to show, how
+oh-my-posh applies its accents and which tools to put on the machine — with
+live previews of the prompt, the status bars, herdr and the install plan —
+then installs the lot (idempotent, backs up any real file it would overwrite
+as `<file>.bak`).
 
 ```
 ./install.sh                 # prompts on the first run, reuses the answers after

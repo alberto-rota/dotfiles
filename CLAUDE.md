@@ -9,6 +9,9 @@ Personal dotfiles synced across machines: tmux, Claude Code global config, oh-my
 ## Commands
 
 ```
+curl -fsSL albertorota.dev/install.sh | bash          # bare machine, no checkout
+curl -fsSL albertorota.dev/install.sh | bash -s -- --no-tools   # ...with options
+
 ./install.sh                 # installs uv, then prompts (setup UI) on first run
 ./install.sh --reconfigure   # change the colours / machine name / tool selection
 ./install.sh --primary '#78dce8' --secondary '#ffd866' --machine proxima -y
@@ -27,6 +30,25 @@ bash lib/tools.sh --priv                     # what sudo looks like on this box
 ```
 
 There's no test suite. To validate a change, run `./install.sh` (it's idempotent and safe to re-run) and check the rendered output under `.generated/` and the symlinks it creates in `$HOME`. For a change to the setup UI, `--dump` renders every preview to stdout without needing a terminal to drive, and `App.run_test()` (Textual's headless pilot) can drive the widgets.
+
+## The bootstrap — `curl | bash` with no repo on disk
+
+`albertorota.dev/install.sh` serves this repo's `install.sh`, so the one-liner runs it with **no checkout around it**: bash reads the script from stdin, `BASH_SOURCE` is unset and `$0` is `bash`, so the old `DOTFILES="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"` died on `set -u` before doing anything. Worse, `lib/derive.sh`, `lib/tools.sh` and every `*.in` template are simply absent.
+
+So install.sh is self-bootstrapping. `self_dir()` returns empty when the script did not come from a readable file, and `is_checkout()` (`install.sh` **and** `lib/derive.sh` both readable) decides whether what we have is usable. If not, `bootstrap()` fetches the repo and `exec`s the copy inside it. Four cases, all tested:
+
+- **already a checkout at `$DOTFILES_DIR`** — `git pull --ff-only`, non-fatal (local edits, a diverged branch or no network are all reasons to use what's there, not to refuse to install);
+- **absent or empty** — full `git clone` (not `--depth 1`: this is a repo you commit to, and every machine starting shallow just means unshallowing later);
+- **no git** — codeload tarball, `--strip-components 1`. Still a usable checkout, just not a git one. git is itself in the tools catalogue;
+- **non-empty and not ours** — refuse, exit 1, touch nothing.
+
+Overridable by env: `DOTFILES_DIR`, `DOTFILES_SLUG`, `DOTFILES_BRANCH`, `DOTFILES_REPO`, `DOTFILES_TARBALL`.
+
+Two details worth keeping. `DOTFILES_BOOTSTRAPPED=1` is exported before the `exec` so a fetched copy that still can't find its own lib gives one clear error instead of forking forever. And the `exec` redirects stdin from `/dev/tty` when there is one — stdin is the exhausted curl pipe, and handing over the real terminal is what lets the setup UI and the text wizard take their normal paths instead of their no-tty fallbacks. The `(exec 3</dev/tty)` probe is the same subshell trick used further down for `TTY_FD`: `/dev/tty` can exist but be unopenable (cron, CI, a container with no controlling terminal).
+
+The clone is over HTTPS, since a fresh machine has no SSH key. That's fine for pulling; to push, `git -C ~/dotfiles remote set-url origin git@github.com:alberto-rota/dotfiles.git`.
+
+**A change to install.sh only reaches new machines once it is pushed** — the one-liner fetches whatever `main` currently serves, not what is in your working tree.
 
 ## uv, and the setup UI
 

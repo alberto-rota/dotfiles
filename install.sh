@@ -17,9 +17,102 @@
 # a first run) is unavailable, so an offline machine can still be set up.
 #
 # Everything that is not themed is symlinked straight out of the repo as before.
+#
+# Two entry points, and the first one is why the bootstrap block below exists:
+#
+#     curl -fsSL albertorota.dev/install.sh | bash     # bare machine, no checkout
+#     ./install.sh                                     # from a clone
+#
 set -euo pipefail
 
-DOTFILES="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# --- bootstrap: fetch the repo when there isn't one -----------------------------
+# Piped into bash, this script arrives on stdin: BASH_SOURCE is unset, $0 is
+# "bash", and there is no repo on disk -- so lib/derive.sh and lib/tools.sh,
+# which everything below sources, do not exist yet, and neither do the templates
+# that get rendered. The fix is for this file to be self-bootstrapping: work out
+# that it is running detached, clone the repo, and hand over to the copy inside
+# it. From a normal checkout none of this runs.
+DOTFILES_SLUG="${DOTFILES_SLUG:-alberto-rota/dotfiles}"
+DOTFILES_REPO="${DOTFILES_REPO:-https://github.com/$DOTFILES_SLUG.git}"
+DOTFILES_BRANCH="${DOTFILES_BRANCH:-main}"
+DOTFILES_DIR="${DOTFILES_DIR:-$HOME/dotfiles}"
+DOTFILES_TARBALL="${DOTFILES_TARBALL:-https://codeload.github.com/$DOTFILES_SLUG/tar.gz/refs/heads/$DOTFILES_BRANCH}"
+
+# The directory this script is in, or empty if it did not come from a file.
+self_dir() {
+  local self="${BASH_SOURCE[0]:-}"
+  [ -n "$self" ] && [ -r "$self" ] || return 1
+  cd "$(dirname "$self")" && pwd
+}
+
+# Does this look like a checkout of this repo, rather than just some directory?
+is_checkout() { [ -r "$1/install.sh" ] && [ -r "$1/lib/derive.sh" ]; }
+
+bootstrap() {
+  echo "dotfiles: no checkout around this script, fetching one."
+  echo "  repo   $DOTFILES_REPO ($DOTFILES_BRANCH)"
+  echo "  into   $DOTFILES_DIR"
+  echo ""
+
+  if is_checkout "$DOTFILES_DIR"; then
+    echo "Already cloned; refreshing."
+    # Non-fatal on purpose: local edits, a diverged branch or no network are all
+    # reasons to carry on with the checkout that is already there rather than to
+    # refuse to install.
+    if [ -d "$DOTFILES_DIR/.git" ] && command -v git >/dev/null 2>&1; then
+      git -C "$DOTFILES_DIR" pull --ff-only --quiet 2>/dev/null \
+        || echo "  NOTE: couldn't fast-forward; using the checkout as it is."
+    fi
+  elif [ -e "$DOTFILES_DIR" ] && [ -n "$(ls -A "$DOTFILES_DIR" 2>/dev/null)" ]; then
+    echo "ERROR: $DOTFILES_DIR already exists, is not empty, and is not a" >&2
+    echo "       checkout of this repo. Move it aside, or point somewhere else:" >&2
+    echo "         curl -fsSL albertorota.dev/install.sh | DOTFILES_DIR=~/other bash" >&2
+    exit 1
+  elif command -v git >/dev/null 2>&1; then
+    # A full clone, not --depth 1: this is a repo you commit to, and starting
+    # every machine off shallow just means unshallowing it later.
+    git clone --branch "$DOTFILES_BRANCH" "$DOTFILES_REPO" "$DOTFILES_DIR" || {
+      echo "ERROR: git clone failed." >&2; exit 1; }
+  else
+    # No git yet (the tools phase installs it later). A tarball is enough to get
+    # the installer running, and the result is still a usable checkout -- just
+    # not a git one until you re-clone.
+    echo "No git here; downloading a tarball instead."
+    command -v curl >/dev/null 2>&1 || {
+      echo "ERROR: neither git nor curl on this machine; cannot fetch the repo." >&2
+      exit 1; }
+    mkdir -p "$DOTFILES_DIR"
+    curl -fsSL --retry 2 --connect-timeout 10 --max-time 120 "$DOTFILES_TARBALL" \
+      | tar -xz -C "$DOTFILES_DIR" --strip-components 1 || {
+      echo "ERROR: could not download or unpack $DOTFILES_TARBALL" >&2; exit 1; }
+  fi
+
+  is_checkout "$DOTFILES_DIR" || {
+    echo "ERROR: $DOTFILES_DIR still doesn't look like a checkout." >&2; exit 1; }
+
+  echo ""
+  # Guards against an exec loop if the fetched copy somehow can't find its own
+  # lib either -- better one clear error than a fork bomb.
+  export DOTFILES_BOOTSTRAPPED=1
+  # stdin is the exhausted curl pipe, so hand the real terminal over: with it,
+  # the setup UI and the text wizard both take their normal path instead of
+  # their "no tty" fallbacks. Without one (CI, cron) the run just stays
+  # non-interactive, which is already handled everywhere below.
+  if [ -r /dev/tty ] && (exec 3</dev/tty) 2>/dev/null; then
+    exec bash "$DOTFILES_DIR/install.sh" "$@" </dev/tty
+  fi
+  exec bash "$DOTFILES_DIR/install.sh" "$@"
+}
+
+DOTFILES="$(self_dir || true)"
+if [ -z "$DOTFILES" ] || ! is_checkout "$DOTFILES"; then
+  if [ -n "${DOTFILES_BOOTSTRAPPED:-}" ]; then
+    echo "ERROR: bootstrapped into $DOTFILES_DIR but lib/derive.sh is still missing." >&2
+    exit 1
+  fi
+  bootstrap "$@"
+fi
+
 GENERATED="$DOTFILES/.generated"
 XDG_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}"
 ANSWERS="$XDG_CONFIG/dotfiles/theme.env"
@@ -98,6 +191,8 @@ TOOLS_ONLY=0
 usage() {
   cat <<EOF
 Usage: ./install.sh [options]
+       curl -fsSL albertorota.dev/install.sh | bash
+       curl -fsSL albertorota.dev/install.sh | bash -s -- [options]
 
   -r, --reconfigure     Re-ask for colours and machine name even if answers are saved.
       --primary HEX     Set the primary colour non-interactively (e.g. --primary '#78dce8').
@@ -118,6 +213,14 @@ Tools are installed by whichever route this machine can actually use: apt when
 you have root or sudo, and rustup/cargo, uv, release tarballs, git clones or
 Homebrew when you don't. './install.sh --tools-only -y' shows the plan and runs
 it without touching any config; 'bash lib/tools.sh --plan' just shows it.
+
+Piped from curl there is no checkout to run from, so this script clones one
+first and hands over to the copy inside it. That is controlled by:
+
+  DOTFILES_DIR      where to clone       (default \$HOME/dotfiles)
+  DOTFILES_SLUG     owner/repo on GitHub (default alberto-rota/dotfiles)
+  DOTFILES_BRANCH   branch to check out  (default main)
+  DOTFILES_REPO     full clone URL, if it isn't GitHub
 EOF
 }
 
