@@ -9,8 +9,8 @@ Personal dotfiles synced across machines: tmux, Claude Code global config, oh-my
 ## Commands
 
 ```
-curl -fsSL albertorota.dev/install.sh | bash          # bare machine, no checkout
-curl -fsSL albertorota.dev/install.sh | bash -s -- --no-tools   # ...with options
+curl -fsSL albertorota.dev/setmeup.sh | bash          # bare machine, no checkout
+curl -fsSL albertorota.dev/setmeup.sh | bash -s -- --no-tools   # ...with options
 
 ./install.sh                 # installs uv, then prompts (setup UI) on first run
 ./install.sh --reconfigure   # change the colours / machine name / tool selection
@@ -22,18 +22,23 @@ curl -fsSL albertorota.dev/install.sh | bash -s -- --no-tools   # ...with option
 ./install.sh --help
 ./reset.sh                   # undo everything install.sh put in place
 
-uv run --script tui/configure.py --dump      # previews to stdout, no UI
+uv run --script tui/configure.py --dump            # previews to stdout, no UI
+uv run --script tui/configure.py --dump --width 40 # ...at a narrow width
 bash lib/derive.sh                           # the derived values, KEY=value
 bash lib/tools.sh --plan                     # what a tools run would do here
 bash lib/tools.sh --list                     # the catalogue, id|label|group|on
 bash lib/tools.sh --priv                     # what sudo looks like on this box
+
+uv run --script tui/measure.py               # every pane at widths 120..20
+uv run --script tui/test_narrow.py           # the real app at 10 terminal sizes
+uv run --script tui/test_panes.py            # panes vs the boxes that hold them
 ```
 
 There's no test suite. To validate a change, run `./install.sh` (it's idempotent and safe to re-run) and check the rendered output under `.generated/` and the symlinks it creates in `$HOME`. For a change to the setup UI, `--dump` renders every preview to stdout without needing a terminal to drive, and `App.run_test()` (Textual's headless pilot) can drive the widgets.
 
 ## The bootstrap — `curl | bash` with no repo on disk
 
-`albertorota.dev/install.sh` serves this repo's `install.sh`, so the one-liner runs it with **no checkout around it**: bash reads the script from stdin, `BASH_SOURCE` is unset and `$0` is `bash`, so the old `DOTFILES="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"` died on `set -u` before doing anything. Worse, `lib/derive.sh`, `lib/tools.sh` and every `*.in` template are simply absent.
+`albertorota.dev/setmeup.sh` serves this repo's `install.sh`, so the one-liner runs it with **no checkout around it**: bash reads the script from stdin, `BASH_SOURCE` is unset and `$0` is `bash`, so the old `DOTFILES="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"` died on `set -u` before doing anything. Worse, `lib/derive.sh`, `lib/tools.sh` and every `*.in` template are simply absent.
 
 So install.sh is self-bootstrapping. `self_dir()` returns empty when the script did not come from a readable file, and `is_checkout()` (`install.sh` **and** `lib/derive.sh` both readable) decides whether what we have is usable. If not, `bootstrap()` fetches the repo and `exec`s the copy inside it. Four cases, all tested:
 
@@ -65,6 +70,35 @@ Pane borders and their titles are white, not Textual's default `$panel` -- that 
 
 The previews are real rather than drawn, and that is the point of the split below: the status bar is the string `lib/derive.sh` assembles (herdr's only — tmux's comes out of the same toggles and the same code, so showing both said the same thing twice), interpreted by a small tmux-format renderer in `configure.py` (which reproduces tmux dropping a whole `#[...]` directive that contains an invalid colour — that is what makes the deliberate `bg=#00000t0` typo look right), with `#(...)` segments actually executed. Helper scripts are rendered with the colours left as `<<PRIMARY>>`/`<<SECONDARY>>` sentinels and substituted in their *output*, so changing a colour repaints instantly instead of re-running `nvidia-smi`. The prompt is `oh-my-posh print` on a rendered copy of the real template, and the Claude Code line is the rendered status line script run against a sample statusLine payload (its five bubble colours use the same sentinel trick, so recolouring does not re-run jq). Only the herdr pane is a drawing.
 
+## Nothing wraps — and it has to keep not wrapping
+
+A wrapped line is not a cosmetic problem here. A wrapped status bar is a *lie about what the bar looks like*, and a wrapped heading or palette row silently changes a widget's height, which shoves everything below it down and makes the panel jump as you type. So both front-ends clip rather than wrap, and both size their content from the width they actually have.
+
+**The UI.** `fit_block()` is the backstop: it clips every line of a pane to the width and sets `no_wrap`/`overflow="ellipsis"`. Every pane also calls it on its own way out, so a pane measured alone reports what it will really occupy — that is what makes the measurement harness meaningful. CSS carries `text-wrap: nowrap` on `#previews Static`, `.section`, `ChoiceRow`, `PaletteGrid` and `Checkbox`, plus `overflow-x: hidden` on `#previews`. `.hint` is the **one deliberate exception** — those are prose and carry their own newlines.
+
+Four places had to be fixed at the source, not just clipped:
+
+- **oh-my-posh** right-aligns its second block to the `--terminal-width` it is told, so a stale `max(width, 40)` produced a 92-cell line in a 46-cell pane. It now gets the real width.
+- **herdr** had `inner = max(width - 2, 44)`, which drew a 46-cell box into any pane it was handed and overflowed narrower ones by up to 26 cells. The floor is gone; under 26 cells it returns `(too narrow)` — itself kept short, because the original wording was 31 cells and overflowed the very panes it was apologising for.
+- **the install plan** had a fixed 19-cell id column, which alone overflowed a pane under ~22 cells. Both columns are now sized from the width, and the route is dropped rather than wrapped when there is no room.
+- **`compose_bar`** gets a final clip: both halves are already truncated, but an ellipsis substituted into a double-width cell can still land one cell over.
+
+**Layout.** Below `SetupApp.NARROW_AT` (88 columns) the two-column split stops being useful — 46 for the controls leaves the previews a sliver — so `on_resize()` sets a `narrow` class and they stack. App CSS outranks `Horizontal`'s own `layout: horizontal`, which is what makes that work.
+
+**The palette grid** sizes itself in `_metrics()`, and **the scheme names take priority over swatch width**: eight 4-cell swatches plus `" catppuccin"` wants 43 cells and the controls panel has 41, which was silently cutting the two longest names to `catppucc` and `tokyonig`. The swatches give up a cell instead (4 → 3 → 2 → 1), and names are shown in **full or not at all** — a half-name is worse than none, since the heading names the scheme you are on. For the same reason the heading shows only the accent being *edited*: both at once is 43 cells before the word "Colours".
+
+**The text wizard** gets its width from `term_cols()` (stty on the real terminal, then `tput`, then 80; never below 20) and sizes the swatch ribbon from it the same way. `section()` exists because the headings used to be parenthetical tails — `"Machine name  (shown in the tmux bar and the shell prompt)"` is 60 cells — so the hint moved onto its own line. `bar_seg()` gives the sample status bar a cell budget and drops pills from the right, which is what tmux does to a bar too wide for its window; `BAR_DROPPED` adds the `…`. Every prompt string is kept short enough to fit ~38 columns.
+
+Two things deliberately left alone: `omp_live_preview` has **no `cut` backstop**, because `cut -c` counts characters rather than display cells and this stream is mostly colour escapes — it would hack the prompt apart long before its visible end, and clipping ANSI-plus-nerd-font text by cell in portable awk risks mojibake instead. And oh-my-posh's own prompt can exceed a terminal under ~60 columns, which is exactly what the real prompt does there too. Its output is piped through `awk '{ print "    " $0 }'` rather than `sed 's/^/    /'` because oh-my-posh emits no trailing newline and `awk`'s `print` always adds one — without that the sample status bar printed onto the end of the prompt line.
+
+**Each pane is sized by its own widget's `content_size`, never by one shared estimate.** That was `#previews`.content_size minus a hardcoded 4 — but `.preview.wide` carries no padding while `.preview` does, and the scrollbar takes two cells more, so the single figure was right for three panes and two cells too generous for the other two. The herdr box is drawn to fill its width *exactly*, so those two cells wrapped all eleven of its lines in half, at every terminal size. `#previews` is `overflow-y: scroll` rather than `auto` for the same reason: with `auto` the scrollbar appears *because* of what was just rendered, shrinking every pane after the fact. `_apply()` additionally re-renders if a width moved under it (a resize racing the worker), which converges on the next pass.
+
+To check a change here, three harnesses, and they catch different things:
+
+- `tui/measure.py` — every pane at widths 120 → 20, asserting the pane's own output fits the width it was given;
+- `tui/test_narrow.py` — the real app at ten terminal sizes, asserting no rendered line exceeds the *terminal*;
+- `tui/test_panes.py` — the real app again, asserting each pane fits **the box that holds it** and is not drawn taller than its own line count. This is the one that catches wrapping *inside* a bordered container, which the other two cannot: wrapping does not make the screen wider, it makes the box taller. Every pane failed it at every size until the sizing above was fixed.
+
 ## lib/derive.sh — the one source of truth for computed values
 
 Everything derived *from* the answers lives in `lib/derive.sh`: the palette, `valid_hex`/`valid_machine`, `darken()`, and `derive()`, which computes `PRIMARY_DIM`, `MACHINE_LOWER`, `USER_NAME`, the four `OMP_*` colours and the four assembled status-line strings. install.sh sources it and calls `derive`; `tui/configure.py` executes it (`bash lib/derive.sh`, emit mode prints `KEY=value` lines) and parses the result. That is why the preview cannot drift from what gets installed — there is only one assembly, and both front-ends run it. **Add a derived value there, not in install.sh.**
@@ -92,6 +126,20 @@ Three things each installer is careful about, all the same hazard: `rustup` gets
 PATH goes out two ways. Permanently through `~/.config/dotfiles/tools-env.sh` (written by `tools_write_env()`, sourced by `bashrc_additions.sh` — same shape as `uv-env.sh`, and the reason Homebrew gets a full `brew shellenv` rather than just its bin dir). And for the terminal the install ran in, `print_path_hint()` prints a copy-paste `export PATH=...`, compared against `TOOLS_ORIG_PATH` — the PATH as it was when the phase *started*, because `install_rust()` and `install_neovim()` prepend to install.sh's own PATH so later steps can use what they just installed, and checking the live one would report every such directory as already handled.
 
 Tools are **not** recorded in the manifest: `reset.sh` undoes this repo's config, not the software on the machine.
+
+## The hsl login autostart
+
+`HSL_LOGIN` is the one answer that changes what opening a terminal does, so it is the one that can lock you out of a machine you only reach over ssh. It is therefore **off by default**, and `shell/hsl-login.sh.in` is deliberately paranoid about it:
+
+- it is **sourced**, never executed, so every exit path is `return` — an `exit` would close the login shell;
+- `hsl` is **run, not `exec`ed**, so quitting herdr drops you into a normal shell rather than ending the session;
+- `NO_HSL=1` is the escape hatch (`NO_HSL=1 bash -l`), checked before anything else;
+- `DOTFILES_HSL_STARTED` (exported) makes it once-per-login — `~/.bashrc` gets re-sourced constantly, not least by this repo's own `rebash` alias, and each of those would otherwise stack another herdr;
+- it bails on: a non-interactive shell (`case $- in *i*`), `SSH_ORIGINAL_COMMAND` (scp/rsync break outright if a login shell writes to stdout), **being inside herdr already** (`HERDR_ENV`/`HERDR_PANE_ID`/`HERDR_SOCKET_PATH`/`HERDR_WORKSPACE_ID` — every pane herdr spawns runs `~/.bashrc`, so without this the first thing a new pane does is start a second herdr inside itself), `TMUX`, an agent shell (`CLAUDECODE`/`AI_AGENT`), no tty on both ends, `TERM=dumb`, and `hsl` not being on PATH at all.
+
+The answer is baked in at render time rather than re-read per shell, so "off" is a file that returns on its second line. It is sourced from the **very end** of `bashrc_additions.sh`: when it does start herdr it blocks until you quit, so anything after that line would not run until then.
+
+`hsl` itself ships with the herdr-statusline plugin (it is a generated launcher — do **not** put it in `bin/`), which is a separate answer, so it can legitimately be absent; install.sh prints a NOTE for that combination rather than failing.
 
 ## Backup + reset
 
@@ -173,7 +221,9 @@ Not oversights — don't try to "restore" these:
 - A new placeholder needs adding in *two* places: install.sh's `render()` sed, and `placeholders()` in `tui/configure.py`, whose `render_template()` mirrors `render()` (same `#>>` stripping, same longest-name-first substitution) so previews render the same file the installer will.
 - A new answer needs: a default + the `theme.env` write in install.sh, a field on `Answers` in `tui/configure.py` (which round-trips it through `as_env()`/`as_shell()`), a control in `compose()`, and a prompt in the text fallback's `ask_components()`.
 - A new **tool**, by contrast, needs editing exactly one file: add its id to `TOOL_IDS` (in dependency order), give it a `TOOL_LABEL`/`TOOL_GROUP` entry, a `tool_present` probe, a `tool_route` case and an `install_<id>()`. Both front-ends pick it up from the catalogue, theme.env gains its line automatically, and it defaults to on. Add a `TOOL_DEPS` entry only if it genuinely cannot be installed before something else.
-- The palette is 24 colours in three rows of eight (vivid, gap-filling, pastel), and it lives **only** in `lib/derive.sh`. install.sh used to carry its own copy of the first eight, which meant the text wizard silently offered a different set from the UI — don't reintroduce that.
+- The palette is 48 colours as **six rows of eight, each row one real scheme** (`PALETTE_ROWS`: monokai, catppuccin, dracula, nord, tokyonight, neon), and it lives **only** in `lib/derive.sh`. install.sh used to carry its own copy of the first eight, which meant the text wizard silently offered a different set from the UI — don't reintroduce that. Only each scheme's *accent* ramp is included, never its backgrounds or greys: the primary is used as a **background with black text on it** (both status bars, the Claude Code bubbles), so a dark entry would be unreadable there. Hexes are unique across all six rows — the UI marks "your primary is here" by hex lookup, so a duplicate would show two markers. `PALETTE=name:hex:scheme` is the emit format; `palette_index()`/`palette_group_of()`/`palette_label()` turn a hex back into "monokai / pink".
+- Both front-ends dropped the 48-numbered-lines menu. The text wizard picks in **two steps** (scheme, then colour within it — six ribbon rows, with `<-` on the row holding the current colour); the UI has **one** `PaletteGrid` for both accents instead of two `PaletteRow`s, marking primary `P` / secondary `S` / `PS` inside the swatch itself, which removes the pointer line *and* the duplicate grid. `p`/`s`, the "editing" ChoiceRow, or clicking a swatch chooses which accent the arrows move.
+- `SetupApp._inputs_live` is **not** called `_ready` — `App` already has a `_ready()` method, and shadowing it crashes the app on start. It exists because Textual posts `Input.Changed` for an Input's *initial* value as it mounts, and `_hex_typed()` treats a change as "the user is working on this accent"; without the flag the secondary hex box, purely by mounting last, left the grid editing secondary before the user touched anything.
 - `#>>` -prefixed lines in a `.in` template are template-only comments and get stripped by `render()` — use them for notes that shouldn't appear in the rendered/live config.
 - `render_script()` inserts the GENERATED header as line 2 (after the shebang, which must stay on line 1) and `chmod +x`s the output.
 - `link()`/`copy()` back up any real file at the destination as `<file>.bak` before taking it over — safe to re-run against a machine with pre-existing dotfiles. See "Backup + reset" above.

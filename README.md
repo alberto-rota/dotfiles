@@ -4,7 +4,7 @@ Personal machine config, synced across machines. On a brand new machine, one
 line is the whole thing:
 
 ```
-curl -fsSL albertorota.dev/install.sh | bash
+curl -fsSL albertorota.dev/setmeup.sh | bash
 ```
 
 There is no checkout to run from at that point, so the script clones this
@@ -14,8 +14,8 @@ release tarball; git itself is one of the tools it installs.) Pass options
 through with `bash -s --`, and override where it lands with `DOTFILES_DIR`:
 
 ```
-curl -fsSL albertorota.dev/install.sh | bash -s -- --no-tools
-curl -fsSL albertorota.dev/install.sh | DOTFILES_DIR=~/cfg bash
+curl -fsSL albertorota.dev/setmeup.sh | bash -s -- --no-tools
+curl -fsSL albertorota.dev/setmeup.sh | DOTFILES_DIR=~/cfg bash
 ```
 
 From a clone it's just `./install.sh`. Either way it installs
@@ -72,10 +72,63 @@ The previews are the real thing, not drawings of it:
   fall from `cargo` to `brew` (or to blocked, if you turn that off too).
 
 Everything is keyboard-driven: `tab` between fields, `←`/`→`/`↑`/`↓` or
-`1`-`8` on a palette (twenty-four swatches, three rows), `←`/`→`/`enter` to
-cycle a choice row, `space` to toggle a checkbox, `ctrl+s` to install, `esc`
-to quit. Machines without uv (or without the network to fetch it) fall back
-to the original text wizard, so an offline machine can still be set up.
+`1`-`8` in the palette, `p`/`s` to switch which accent the palette moves,
+`←`/`→`/`enter` to cycle a choice row, `space` to toggle a checkbox, `ctrl+s`
+to install, `esc` to quit. Machines without uv (or without the network to
+fetch it) fall back to the original text wizard, so an offline machine can
+still be set up.
+
+### The palette
+
+48 colours, as six rows of eight — and each row is one real scheme, so
+"which row" is itself the choice:
+
+| | |
+|---|---|
+| monokai | this repo's own identity |
+| catppuccin | mocha accents |
+| dracula | |
+| nord | frost, then the warmer aurora half |
+| tokyonight | |
+| neon | where the defaults come from |
+
+Only each scheme's *accent* ramp is included, never its backgrounds or
+greys: the primary gets used as a **background with black text on it** (both
+status bars, the Claude Code bubbles), so a dark entry would be illegible
+there. The near-whites (`dracula/snow`, `nord/snow`) are the deliberate
+low-saturation option — saturation is passed through untouched, so those
+give grey pills rather than invented colour. Any `#rrggbb` still works if
+none of the 48 suit.
+
+Rather than a 48-line menu, the setup UI shows one grid for **both** accents
+at once, marked `P` and `S` in place (`PS` if you set them the same), with
+`p`/`s` choosing which one the arrows move. The text wizard asks in two
+steps: scheme first (six rows of swatches, `<-` on the one you are on), then
+the colour inside it.
+
+### hsl at login
+
+Optionally, `hsl` — herdr with the status line — starts at every interactive
+login. **Off by default**, because it is the one setting that changes what
+opening a terminal does, and getting it wrong on a machine you only reach
+over ssh is worse than any wrong colour.
+
+It is run rather than `exec`ed, so quitting herdr leaves you in a normal
+shell, and `NO_HSL=1 bash -l` skips it outright. It also declines to start
+when it would be wrong or recursive: inside herdr already (every pane herdr
+spawns re-runs `~/.bashrc`), inside tmux, inside an AI agent's shell, on a
+non-interactive shell, under an ssh forced command, with `TERM=dumb`, or
+when `hsl` isn't installed — it ships with the herdr-statusline plugin.
+
+Both front-ends are built to fit the terminal rather than wrap in it: a
+wrapped status bar is a lie about what the bar looks like. Content is clipped
+to the width instead, panes size themselves from the space they have, the
+palette narrows its swatches (keeping the scheme names in full) and the
+sample bar drops pills from the right the way tmux does. Below 88 columns the
+setup UI stacks its two panels instead of squeezing them. It stays readable
+down to about 60 columns, and usable well below that — the one thing that can
+still outgrow a very narrow terminal is oh-my-posh's own prompt, which would
+do that on its own account anyway.
 
 Answers are saved to `~/.config/dotfiles/theme.env`, so later runs re-render
 without prompting — which is what you want after editing a template. Add `-y`

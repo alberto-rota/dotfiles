@@ -23,23 +23,67 @@
 # --- the palette offered by both front-ends -------------------------------------
 # Lives here rather than in either front-end so the bash wizard and the Textual
 # TUI cannot offer different swatches.
-# Twenty-four, laid out by the UI as three rows of eight, each row a register
-# rather than an arbitrary continuation:
-#   1. the original Monokai-ish eight;
-#   2. the gaps in it (a true red, a blue, a neutral silver), so either accent
-#      can be picked from a real spread rather than from one corner of the wheel;
-#   3. pastels -- the same wheel at low saturation and high lightness, for a
-#      prompt/bar that reads as tinted rather than as neon.
-# All are light enough to carry black text, which most of the pills that use
-# them do; the pastel row has the most headroom there by construction.
-PALETTE_NAMES=(green     mint      cyan      purple    pink      yellow    orange    peach
-               lime      teal      sky       lavender  magenta   red       gold      silver
-               sage      seafoam   ice       periwinkle orchid   blush     cream     sand)
-PALETTE_HEX=(  '#00ff00' '#a9dc76' '#78dce8' '#ab9df2' '#ff6188' '#ffd866' '#ff7803' '#fc9867'
-               '#a6e22e' '#06d6a0' '#61afef' '#c792ea' '#ff79c6' '#ff5555' '#f5bf45' '#d6deeb'
-               '#b8e0b0' '#9fe2cf' '#b3e5fc' '#c5cae9' '#e1bee7' '#ffb3c1' '#fff1a8' '#e6d3b3')
-# How the UI wraps them; kept here so both front-ends agree on the layout.
+# Forty-eight, as six rows of eight -- and each row is one real, recognisable
+# scheme rather than a bag of colours, so "which row" is itself a meaningful
+# choice: pick the Catppuccin row and the whole machine reads Catppuccin.
+#
+# Only each scheme's ACCENT ramp is included, never its backgrounds or greys:
+# the primary is used as a *background* with black text on it (the tmux and
+# herdr bars, the Claude Code bubbles), so anything dark would be unreadable
+# there. Every entry below clears that bar, with the near-whites (dracula/snow,
+# nord/snow) as the deliberate low-saturation option -- claude_ramp() passes
+# saturation through untouched, so those give grey pills rather than invented
+# colour.
+#
+# Hexes are unique across all six rows, which is what lets the UI mark "this is
+# your primary" / "this is your secondary" by looking a colour up in the grid.
+PALETTE_ROWS=(monokai catppuccin dracula nord tokyonight neon)
+PALETTE_NAMES=(
+  # monokai -- this repo's own identity (Monokai Pro's accent ramp)
+  green     mint      cyan      purple    pink      yellow    orange    peach
+  # catppuccin mocha
+  rosewater pink      mauve     red       peach     yellow    green     sky
+  # dracula
+  pink      purple    cyan      green     yellow    orange    red       snow
+  # nord -- frost, then the warmer aurora half
+  teal      ice       blue      snow      red       rust      sand      moss
+  # tokyo night
+  blue      cyan      green     teal      purple    red       orange    yellow
+  # neon -- not a scheme so much as a register, and the one the defaults come from
+  pink      magenta   purple    blue      cyan      green     yellow    orange
+)
+PALETTE_HEX=(
+  '#a6e22e' '#a9dc76' '#78dce8' '#ab9df2' '#ff6188' '#ffd866' '#ff7803' '#fc9867'
+  '#f5e0dc' '#f5c2e7' '#cba6f7' '#f38ba8' '#fab387' '#f9e2af' '#a6e3a1' '#89dceb'
+  '#ff79c6' '#bd93f9' '#8be9fd' '#50fa7b' '#f1fa8c' '#ffb86c' '#ff5555' '#f8f8f2'
+  '#8fbcbb' '#88c0d0' '#81a1c1' '#eceff4' '#bf616a' '#d08770' '#ebcb8b' '#a3be8c'
+  '#7aa2f7' '#7dcfff' '#9ece6a' '#73daca' '#bb9af7' '#f7768e' '#ff9e64' '#e0af68'
+  '#ff2d95' '#ff00ff' '#b026ff' '#00b3ff' '#00fff7' '#00ff00' '#fff700' '#ff6600'
+)
+# How the UI wraps them; kept here so both front-ends agree on the layout. It is
+# also the row width the grouping above depends on -- eight per scheme.
 PALETTE_COLUMNS=8
+
+# Which scheme a flat index belongs to, and its "scheme/name" label. Both
+# front-ends show that label rather than a bare hex, since "monokai / pink" says
+# far more than "#ff6188".
+palette_group_of() { printf '%s' "${PALETTE_ROWS[$(( $1 / PALETTE_COLUMNS ))]}"; }
+
+# The index of a hex in the palette, or -1 for a custom colour.
+palette_index() {
+  local want="${1,,}" i
+  for i in "${!PALETTE_HEX[@]}"; do
+    [ "${PALETTE_HEX[$i],,}" = "$want" ] && { printf '%s' "$i"; return 0; }
+  done
+  printf '%s' -1
+}
+
+# "  (monokai / pink)", or "  (custom)" -- for the prompts in both wizards.
+palette_label() {
+  local idx; idx="$(palette_index "$1")"
+  if [ "$idx" -lt 0 ]; then printf '  (custom)'; return; fi
+  printf '  (%s / %s)' "$(palette_group_of "$idx")" "${PALETTE_NAMES[$idx]}"
+}
 
 # The third choice wherever a component picks a colour ("neutral") -- the
 # theme's own default text colour (see transient_prompt in the .omp.json), not
@@ -89,8 +133,8 @@ accent_hex() {
 # Lightness is floored at 0.50 on the way out: the bubbles carry black text, so
 # a dark accent has to be lifted or the label stops being readable (black on
 # L=0.25 is ~2.5:1). Nothing is capped from above -- lighter only helps here --
-# and saturation is passed through untouched, so picking the silver swatch
-# gives grey pills rather than invented colour.
+# and saturation is passed through untouched, so picking one of the near-white
+# swatches (dracula/snow, nord/snow) gives grey pills rather than invented colour.
 claude_ramp() {
   local p="${PRIMARY#\#}" s="${SECONDARY#\#}"
   awk -v p="$p" -v s="$s" -v n=5 '
@@ -257,9 +301,13 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   SECONDARY="${SECONDARY:-#ff7803}"
   MACHINE="${MACHINE:-machine}"
   derive
+  # name:hex:scheme per field -- the scheme is what lets the UI label each row.
   printf 'PALETTE='
-  for i in "${!PALETTE_HEX[@]}"; do printf '%s:%s ' "${PALETTE_NAMES[$i]}" "${PALETTE_HEX[$i]}"; done
+  for i in "${!PALETTE_HEX[@]}"; do
+    printf '%s:%s:%s ' "${PALETTE_NAMES[$i]}" "${PALETTE_HEX[$i]}" "$(palette_group_of "$i")"
+  done
   printf '\n'
+  printf 'PALETTE_ROWS=%s\n' "${PALETTE_ROWS[*]}"
   printf 'PALETTE_COLUMNS=%s\n' "$PALETTE_COLUMNS"
   for v in PRIMARY SECONDARY MACHINE PRIMARY_DIM MACHINE_LOWER USER_NAME NEUTRAL_FG \
            OMP_ICON_COLOR OMP_ICON_COLOR_JOB OMP_TEXT_COLOR OMP_CHEVRON_FG OMP_CHEVRON_ERR \

@@ -124,6 +124,14 @@ class Tool:
     group: str
 
 
+@dataclass(frozen=True)
+class Swatch:
+    """One palette entry: "pink", "#ff6188", "monokai"."""
+    name: str
+    hex: str
+    group: str
+
+
 # What each catalogue group is called in the UI. An unknown group falls back to
 # its own name, so adding one to lib/tools.sh needs no edit here.
 GROUP_LABELS = {
@@ -186,6 +194,10 @@ class Answers:
     omp_text: str = "primary"
     omp_chevron_ok: str = "primary"
     omp_chevron_error: str = "secondary"
+    # Start hsl (herdr + the status line) from ~/.bashrc at login. Off by
+    # default: it is the one answer that changes what opening a terminal does,
+    # and shell/hsl-login.sh.in carries a wall of guards because of it.
+    hsl_login: bool = False
     # The tools, held as "everything in the catalogue" plus "the ones switched
     # off" rather than as one field per tool: the catalogue is lib/tools.sh's to
     # define, and a dataclass field per entry would mean editing this file every
@@ -242,6 +254,7 @@ class Answers:
             show_temp=flag("SHOW_TEMP", d.show_temp),
             show_slurm=flag("SHOW_SLURM", d.show_slurm),
             show_datetime=flag("SHOW_DATETIME", d.show_datetime),
+            hsl_login=flag("HSL_LOGIN", d.hsl_login),
             omp_icon_mode=choice("OMP_ICON_MODE", d.omp_icon_mode, ICON_MODES),
             omp_icon=choice("OMP_ICON", legacy_icon),
             omp_text=choice("OMP_TEXT", legacy_text),
@@ -264,6 +277,7 @@ class Answers:
             "SHOW_TEMP": _b(temp),
             "SHOW_SLURM": _b(self.show_slurm),
             "SHOW_DATETIME": _b(self.show_datetime),
+            "HSL_LOGIN": _b(self.hsl_login),
             "OMP_ICON_MODE": self.omp_icon_mode,
             "OMP_ICON": self.omp_icon,
             "OMP_TEXT": self.omp_text,
@@ -328,14 +342,24 @@ def palette_columns(derived: dict[str, str]) -> int:
         return 8
 
 
-def palette_from(derived: dict[str, str]) -> list[tuple[str, str]]:
-    """The swatches, as lib/derive.sh defines them (name:hex name:hex ...)."""
-    entries = []
+def palette_from(derived: dict[str, str]) -> list[Swatch]:
+    """The swatches, as lib/derive.sh defines them: name:hex:scheme, ...
+
+    The scheme is the third field because each row of eight IS one real palette
+    (monokai, catppuccin, ...) and the grid labels its rows with it.
+    """
+    entries: list[Swatch] = []
     for field in derived.get("PALETTE", "").split():
-        name, _, hex_ = field.partition(":")
-        if HEX_RE.match(hex_):
-            entries.append((name, hex_.lower()))
+        parts = field.split(":")
+        if len(parts) >= 2 and HEX_RE.match(parts[1]):
+            entries.append(Swatch(parts[0], parts[1].lower(),
+                                  parts[2] if len(parts) > 2 else ""))
     return entries
+
+
+def palette_rows_from(derived: dict[str, str]) -> list[str]:
+    """The scheme names, in row order."""
+    return derived.get("PALETTE_ROWS", "").split()
 
 
 def render_template(rel: str, mapping: dict[str, str]) -> str:
@@ -364,6 +388,7 @@ def placeholders(derived: dict[str, str], answers: Answers) -> dict[str, str]:
         "USER": derived["USER_NAME"],
         "HERDR_CONFIG": f"{xdg}/herdr",
         "SHOW_TEMP": env["SHOW_TEMP"],
+        "HSL_LOGIN": env["HSL_LOGIN"],
         "OMP_ICON_COLOR": derived["OMP_ICON_COLOR"],
         "OMP_ICON_COLOR_JOB": derived["OMP_ICON_COLOR_JOB"],
         "CLAUDE_MODEL_RGB": derived["CLAUDE_MODEL_RGB"],
@@ -545,10 +570,14 @@ def compose_bar(left: Text, right: Text, width: int, bg: str) -> Text:
     right = right.copy()
     if right.cell_len > width - left.cell_len:
         right.truncate(max(0, width - left.cell_len), overflow="ellipsis")
-    out = Text()
+    out = Text(no_wrap=True, overflow="ellipsis")
     out.append_text(left)
     out.append(" " * max(0, width - left.cell_len - right.cell_len), Style(bgcolor=bg))
     out.append_text(right)
+    # Both halves are clipped above, but an ellipsis substituted into a
+    # double-width cell can still land one over; the bar must be exact.
+    if out.cell_len > width:
+        out.truncate(width, overflow="ellipsis")
     return out
 
 
@@ -612,11 +641,11 @@ class Previewer:
         showing both said the same thing twice."""
         env = answers.as_env()
         resolve = self._resolver(env["SHOW_TEMP"], derived["PRIMARY"], derived["SECONDARY"])
-        return compose_bar(
+        return fit_block(compose_bar(
             render_bar_format(derived["HSL_STATUS_LEFT"], resolve),
             render_bar_format(derived["HSL_STATUS_RIGHT"], resolve),
             width, derived["PRIMARY"],
-        )
+        ), width)
 
     def claude(self, derived: dict[str, str], answers: Answers, width: int) -> Text:
         """The real Claude Code status line: the rendered script, run against a
@@ -653,16 +682,13 @@ class Previewer:
             self._helpers["claude"] = (time.monotonic(), "claude", out)
         for sentinel, key in zip(CLAUDE_SENTINELS, CLAUDE_RGB_KEYS):
             out = out.replace(sentinel, derived[key])
-        text = Text.from_ansi(out.rstrip("\n"))
-        if text.cell_len > width:
-            text.truncate(width, overflow="ellipsis")
-        return text
+        return fit_block(Text.from_ansi(out.rstrip("\n")), width)
 
     def posh(self, derived: dict[str, str], answers: Answers, width: int) -> Text:
         """The real prompt: oh-my-posh rendering a real copy of the template."""
         mapping = placeholders(derived, answers)
         if not shutil.which("oh-my-posh"):
-            return self._posh_fallback(derived)
+            return self._posh_fallback(derived, width)
         config = self._tmpdir / "omp.json"
         config.write_text(
             render_template("oh-my-posh/albe-monokai2.omp.json.in", mapping), encoding="utf-8"
@@ -670,18 +696,25 @@ class Previewer:
         try:
             proc = subprocess.run(
                 ["oh-my-posh", "print", "primary", "--config", str(config),
-                 "--shell", "universal", "--terminal-width", str(max(width, 40))],
+                 # The real width, floored only enough that oh-my-posh has
+                 # something to work with: it right-aligns its second block to
+                 # whatever it is told, so a stale 40 here produced a line 92
+                 # cells wide in a 46-cell pane, which then wrapped.
+                 "--shell", "universal", "--terminal-width", str(max(width, 20))],
                 capture_output=True, text=True, timeout=10,
             )
         except (OSError, subprocess.SubprocessError) as exc:
             return Text(f"oh-my-posh failed: {exc}", style="red")
         if proc.returncode != 0:
-            return self._posh_fallback(derived)
+            return self._posh_fallback(derived, width)
         # OSC (the console title) would otherwise leak into the pane as text.
         clean = re.sub(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)", "", proc.stdout)
-        return Text.from_ansi(clean.rstrip("\n"))
+        # Clipped here, not just by the caller: oh-my-posh pads its right-aligned
+        # block out to the terminal width it was given and can still hand back a
+        # line wider than the pane.
+        return fit_block(Text.from_ansi(clean.rstrip("\n")), width)
 
-    def _posh_fallback(self, derived: dict[str, str]) -> Text:
+    def _posh_fallback(self, derived: dict[str, str], width: int) -> Text:
         """oh-my-posh is not on PATH yet (a machine being set up for the first
         time): draw the machine segment and the chevron line by hand."""
         panel = "#212224"
@@ -693,7 +726,7 @@ class Previewer:
         out.append("╰─", Style(color=panel))
         out.append(" ", Style(color=derived["OMP_CHEVRON_FG"]))
         out.append("  (oh-my-posh not installed yet -- drawn by hand)", Style(dim=True))
-        return out
+        return fit_block(out, width)
 
     def plan(self, derived: dict[str, str], answers: Answers, width: int) -> Text:
         """What the tools phase would do, from `lib/tools.sh --plan` -- the same
@@ -728,7 +761,12 @@ class Previewer:
             "blocked": ("✗", Style(color="#ff5555")),      # no route
             "skip":    ("·", Style(dim=True)),
         }
-        text = Text()
+        text = Text(no_wrap=True, overflow="ellipsis")
+        # 2 cells of glyph, then the id, then what is left for the route. The id
+        # column was a fixed 19, which on its own overflowed a pane under ~22
+        # cells; below that the route is dropped rather than wrapped.
+        id_w = min(19, max(6, width - 12))
+        body_w = width - 2 - id_w - 1
         rows = 0
         for line in out.splitlines():
             parts = line.split("|")
@@ -740,15 +778,22 @@ class Previewer:
                 text.append("\n")
             rows += 1
             text.append(f"{glyph} ", style)
-            text.append(f"{tool_id:<19}", Style(dim=(status == "skip")))
-            body = detail if method == "-" else f"{method}  {detail}"
-            line_text = Text(body, Style(dim=True) if status != "install" else style)
-            if line_text.cell_len > max(width - 22, 12):
-                line_text.truncate(max(width - 22, 12), overflow="ellipsis")
-            text.append_text(line_text)
+            name = Text(tool_id, Style(dim=(status == "skip")))
+            if name.cell_len > id_w:
+                name.truncate(id_w, overflow="ellipsis")
+            else:
+                name.append(" " * (id_w - name.cell_len))
+            text.append_text(name)
+            if body_w >= 6:
+                body = detail if method == "-" else f"{method}  {detail}"
+                line_text = Text(body, Style(dim=True) if status != "install" else style)
+                if line_text.cell_len > body_w:
+                    line_text.truncate(body_w, overflow="ellipsis")
+                text.append(" ")
+                text.append_text(line_text)
         if not rows:
-            return Text("no plan (is lib/tools.sh readable?)", style="red")
-        return text
+            return Text("no plan (lib/tools.sh unreadable?)", style="red")
+        return fit_block(text, width)
 
     def herdr(self, derived: dict[str, str], width: int) -> Text:
         """A drawing, unlike the other panes -- herdr cannot render one frame
@@ -767,8 +812,15 @@ class Previewer:
         fg = "#ebdbb2"
         muted = "#928374"
 
-        inner = max(width - 2, 44)
-        side_w = min(24, max(16, inner // 4))
+        # No floor here any more: it used to be max(width - 2, 44), which drew a
+        # 46-cell box into whatever pane it was given and overflowed every
+        # narrower one by up to 26 cells.
+        if width < 26:
+            # Short on purpose: the old wording was itself 31 cells and
+            # overflowed the very panes it was apologising for.
+            return Text("(too narrow)", style="dim")
+        inner = width - 2
+        side_w = min(24, max(8, inner // 3))
         body_w = inner - side_w - 1          # -1 for the divider column
 
         border = Style(color=accent)
@@ -830,7 +882,7 @@ class Previewer:
         row(side("", Style(color=fg, bgcolor=panel)), body(""))
         hline("╰", "╯", "┴")
         # The window title sits on the top border, as herdr draws it.
-        return _overlay_title(out, title, 2)
+        return fit_block(_overlay_title(out, title, 2), width)
 
     # -- helpers ------------------------------------------------------------
 
@@ -851,6 +903,30 @@ def readable_on_dark(hex_colour: str, min_lightness: float = 0.45) -> str:
         return hex_colour
     r, g, b = colorsys.hls_to_rgb(h, min_lightness, sat)
     return "#%02x%02x%02x" % (round(r * 255), round(g * 255), round(b * 255))
+
+
+def fit_block(text: Text, width: int) -> Text:
+    """Clip every line to `width` and turn wrapping off outright.
+
+    The backstop for the whole preview column. Rich's default is to *wrap* a
+    line that does not fit, which in a preview pane silently doubles its height,
+    shoves everything below it down and makes the panel jump as you type -- and a
+    wrapped status bar is a lie about what the real bar looks like anyway. Each
+    pane below also sizes its own content; this is what guarantees it, so one
+    arithmetic slip cannot reflow the layout.
+    """
+    width = max(width, 4)
+    out = Text(no_wrap=True, overflow="ellipsis")
+    for i, line in enumerate(text.split("\n")):
+        piece = line.copy()
+        if piece.cell_len > width:
+            piece.truncate(width, overflow="ellipsis")
+        piece.no_wrap = True
+        piece.overflow = "ellipsis"
+        if i:
+            out.append("\n")
+        out.append_text(piece)
+    return out
 
 
 def _fit(text: Text, width: int, bg: str) -> Text:
@@ -882,15 +958,36 @@ def _overlay_title(block: Text, title: Text, column: int) -> Text:
 # ---------------------------------------------------------------------------
 # widgets
 # ---------------------------------------------------------------------------
+# The preview panes, by widget id. refresh_previews() sizes each one from its
+# own widget, so this is the list of things that have to exist in compose().
+PREVIEW_PANES = ("posh", "hsl-bar", "claude", "herdr", "plan")
+
 SWATCH_W = 4
-SWATCH_GAP = 1
+# Which accent the grid is editing. Deliberately its own tuple rather than a
+# slice of ACCENT_CHOICES: these are targets, not colour names.
+TARGET_CHOICES = ("primary", "secondary")
 
 
-class PaletteRow(Static):
-    """The palette as a grid of swatches: arrows, digits or a click pick one,
-    and picking applies it immediately -- there is nothing to confirm, the
-    previews are the confirmation. Sixteen colours do not fit on one line of a
-    46-column panel, hence the wrap into rows of PALETTE_COLUMNS."""
+def ink_on(hex_colour: str) -> str:
+    """Black or white, whichever will read on that background."""
+    if not HEX_RE.match(hex_colour):
+        return "#ffffff"
+    r, g, b = (int(hex_colour[i:i + 2], 16) / 255 for i in (1, 3, 5))
+    return "#000000" if (0.2126 * r + 0.7152 * g + 0.0722 * b) > 0.5 else "#ffffff"
+
+
+class PaletteGrid(Static):
+    """All six schemes in one grid: eight swatches a row, the scheme named
+    beside it, and BOTH accents marked in place -- P for primary, S for
+    secondary, PS where they are the same colour.
+
+    One grid rather than the two it replaces. Two widgets meant two six-line
+    grids plus two pointer lines each, which is most of a 46-column panel spent
+    showing the same 48 colours twice; marking both accents in one grid is
+    smaller *and* says more, since you can see how the two sit relative to each
+    other. Arrows and digits move whichever accent is being edited; `p`/`s`, the
+    "editing" row above, or just clicking a swatch choose which that is.
+    """
 
     can_focus = True
     BINDINGS = [
@@ -898,6 +995,8 @@ class PaletteRow(Static):
         Binding("right", "step(1)", "next colour", show=False),
         Binding("up", "step_row(-1)", "row up", show=False),
         Binding("down", "step_row(1)", "row down", show=False),
+        Binding("p", "target('primary')", "edit primary", show=False),
+        Binding("s", "target('secondary')", "edit secondary", show=False),
     ]
 
     class Picked(Message):
@@ -906,58 +1005,125 @@ class PaletteRow(Static):
             self.field = field
             self.hex = hex_
 
-    def __init__(self, field: str, palette: list[tuple[str, str]], value: str,
-                 columns: int = 8, **kwargs) -> None:
+    class TargetChanged(Message):
+        def __init__(self, field: str) -> None:
+            super().__init__()
+            self.field = field
+
+    def __init__(self, palette: list[Swatch], rows: list[str], primary: str,
+                 secondary: str, columns: int = 8, **kwargs) -> None:
         super().__init__(**kwargs)
-        self.field = field
         self.palette = palette
         self.columns = max(1, columns)
-        self.value = value.lower()
+        # Fall back to synthesised row labels if derive.sh gave none, so the
+        # widget still renders rather than collapsing to zero rows.
+        self.row_labels = rows or [
+            s.group for i, s in enumerate(palette) if i % self.columns == 0
+        ]
+        self.values = {"primary": primary.lower(), "secondary": secondary.lower()}
+        self.active = "primary"
 
     @property
     def rows(self) -> int:
         return (len(self.palette) + self.columns - 1) // self.columns
 
-    def set_value(self, value: str) -> None:
-        self.value = value.lower()
+    def set_value(self, field: str, value: str) -> None:
+        self.values[field] = value.lower()
         self.refresh_row()
+
+    def set_active(self, field: str) -> None:
+        if field in self.values:
+            self.active = field
+            self.refresh_row()
 
     def on_mount(self) -> None:
-        # Two lines per swatch row: the swatches, then the selection pointer.
-        self.styles.height = self.rows * 2
+        # One line per scheme now: the marker lives inside the swatch, so there
+        # is no pointer line to pay for.
+        self.styles.height = self.rows
         self.refresh_row()
 
-    def _index(self) -> int:
-        for i, (_, hex_) in enumerate(self.palette):
-            if hex_ == self.value:
+    def on_resize(self, event: events.Resize) -> None:
+        # Cell width and whether the scheme names fit are both decided from the
+        # panel's actual width, so a small terminal narrows the swatches instead
+        # of wrapping each row onto two lines.
+        self.refresh_row()
+
+    def _metrics(self) -> tuple[int, int, bool]:
+        """(cell width, cells left for the label, show labels at all).
+
+        The scheme names take priority over swatch width: eight 4-cell swatches
+        plus " catppuccin" wants 43 cells and the controls panel has 41, which
+        silently cut the two longest names to "catppucc" and "tokyonig". So the
+        swatches give up a cell instead -- 3 wide still reads perfectly well --
+        and names are shown in FULL or not at all. A half-name is worse than no
+        name, since the heading names the scheme you are on anyway.
+        """
+        avail = self.content_size.width or 41
+        longest = max((len(name) for name in self.row_labels), default=0)
+        want = longest + 1                      # the separating space
+        cell = SWATCH_W
+        if self.columns * cell + want > avail:
+            cell = max(1, (avail - want) // self.columns)
+        if cell < 2:                            # not worth this much for a name
+            cell = max(1, avail // self.columns)
+        room = max(0, avail - self.columns * cell)
+        return cell, room, room >= want
+
+    def _index_of(self, field: str) -> int:
+        want = self.values.get(field, "")
+        for i, swatch in enumerate(self.palette):
+            if swatch.hex == want:
                 return i
         return -1
 
-    @property
-    def name_of_value(self) -> str:
-        idx = self._index()
-        return self.palette[idx][0] if idx >= 0 else "custom"
+    def label_for(self, field: str) -> str:
+        """"monokai / pink", or "custom" for a hand-typed hex."""
+        idx = self._index_of(field)
+        if idx < 0:
+            return "custom"
+        swatch = self.palette[idx]
+        return f"{swatch.group} / {swatch.name}" if swatch.group else swatch.name
 
     def refresh_row(self) -> None:
-        idx = self._index()
-        out = Text()
+        p_idx = self._index_of("primary")
+        s_idx = self._index_of("secondary")
+        cell_w, label_room, show_labels = self._metrics()
+        out = Text(no_wrap=True, overflow="ellipsis")
         for row in range(self.rows):
-            entries = self.palette[row * self.columns:(row + 1) * self.columns]
-            for _, hex_ in entries:
-                out.append(" " * SWATCH_W, Style(bgcolor=hex_))
-                out.append(" " * SWATCH_GAP)
-            out.append("\n")
-            # An underline pointer rather than more of the swatch colour, so it
-            # reads as "this one" against any entry, dark or light.
-            if idx >= 0 and idx // self.columns == row:
-                out.append(" " * ((idx % self.columns) * (SWATCH_W + SWATCH_GAP)))
-                out.append("▔" * SWATCH_W, Style(color="#d6deeb"))
+            for col in range(self.columns):
+                i = row * self.columns + col
+                if i >= len(self.palette):
+                    break
+                hex_ = self.palette[i].hex
+                mark = ""
+                if i == p_idx and i == s_idx:
+                    mark = "PS"
+                elif i == p_idx:
+                    mark = "P"
+                elif i == s_idx:
+                    mark = "S"
+                # A 2-cell marker cannot fit a 1-cell swatch; keep the accent
+                # being edited visible in preference to the other one.
+                if len(mark) > cell_w:
+                    mark = mark[0] if self.active == "primary" else mark[-1]
+                    mark = mark[:cell_w]
+                text = f"{mark:^{cell_w}}" if mark else " " * cell_w
+                out.append(text, Style(bgcolor=hex_, color=ink_on(hex_), bold=True))
+            # The row holding the accent being edited is named in full brightness;
+            # the rest stay dim, so the eye lands on where you are. Dropped
+            # entirely when the swatches have eaten the width -- the heading
+            # names the current scheme anyway.
+            if show_labels:
+                label = self.row_labels[row] if row < len(self.row_labels) else ""
+                here = self.active == "primary" and p_idx // self.columns == row \
+                    or self.active == "secondary" and s_idx // self.columns == row
+                out.append(f" {label}", Style(dim=not here, bold=here))
             if row < self.rows - 1:
                 out.append("\n")
         self.update(out)
 
     def action_step(self, delta: int) -> None:
-        idx = self._index()
+        idx = self._index_of(self.active)
         if idx < 0:
             idx = 0 if delta > 0 else len(self.palette) - 1
         else:
@@ -965,32 +1131,40 @@ class PaletteRow(Static):
         self._pick(idx)
 
     def action_step_row(self, delta: int) -> None:
-        idx = self._index()
-        if idx < 0:
-            idx = 0
-        else:
-            idx = (idx + delta * self.columns) % len(self.palette)
+        idx = self._index_of(self.active)
+        idx = 0 if idx < 0 else (idx + delta * self.columns) % len(self.palette)
         self._pick(idx)
+
+    def action_target(self, field: str) -> None:
+        self.set_active(field)
+        self.post_message(self.TargetChanged(field))
 
     def _pick(self, idx: int) -> None:
         if 0 <= idx < len(self.palette):
-            self.set_value(self.palette[idx][1])
-            self.post_message(self.Picked(self.field, self.value))
+            self.set_value(self.active, self.palette[idx].hex)
+            self.post_message(self.Picked(self.active, self.palette[idx].hex))
 
     def on_click(self, event: events.Click) -> None:
         self.focus()
-        if int(event.y) % 2 == 0:  # a swatch line, not a pointer line
-            row = int(event.y) // 2
-            self._pick(row * self.columns + int(event.x) // (SWATCH_W + SWATCH_GAP))
+        # The live cell width, NOT the SWATCH_W constant. _metrics() narrows the
+        # swatches to keep the scheme names whole -- 3 cells at the default panel
+        # width, 2 on a very small terminal -- so dividing by 4 landed one or two
+        # swatches to the left of wherever you clicked, and further left the
+        # nearer the right-hand end of the row you got.
+        cell_w, _room, _labels = self._metrics()
+        x, y = int(event.x), int(event.y)
+        if x >= self.columns * cell_w:
+            return                      # the scheme label, not a swatch
+        self._pick(y * self.columns + x // cell_w)
 
     def on_key(self, event: events.Key) -> None:
-        # Digits pick within the row the selection is already on, so 1-8 stays
-        # meaningful however many rows the palette wraps to.
+        # Digits pick within the row the active accent is already on, so 1-8
+        # stays meaningful across all six schemes.
         if event.character and event.character.isdigit():
             n = int(event.character)
             if 1 <= n <= self.columns:
                 event.stop()
-                row = max(self._index(), 0) // self.columns
+                row = max(self._index_of(self.active), 0) // self.columns
                 self._pick(row * self.columns + n - 1)
 
 
@@ -1073,19 +1247,40 @@ class SetupApp(App):
        the chosen primary instead (_sync_chrome repaints them on every colour
        change), so the chrome frames the previews without competing with them. */
     #controls { width: 46; padding: 0 1; border-right: solid white; }
-    #previews { width: 1fr; padding: 0 1; }
+    /* overflow-y: scroll, not auto: with auto the scrollbar appears *because*
+       of what was just rendered, taking two cells off every pane after they
+       were drawn to the wider figure -- which is what made the herdr box, drawn
+       to fill its width exactly, wrap all eleven of its lines. Reserving it
+       always keeps content_size stable from the first layout. */
+    #previews { width: 1fr; padding: 0 1; overflow-x: hidden; overflow-y: scroll; }
+    /* Below NARROW_AT the two columns cannot both be useful -- 46 for the
+       controls leaves the previews a sliver -- so they stack instead. Set from
+       on_resize(); app CSS outranks Horizontal's own layout: horizontal. */
+    #body.narrow { layout: vertical; }
+    #body.narrow > #controls {
+      width: 1fr; height: auto; max-height: 70%;
+      border-right: none; border-bottom: solid white;
+    }
+    #body.narrow > #previews { width: 1fr; height: 1fr; }
+    /* Nothing in either column may wrap: a wrapped preview is a lie about what
+       the real bar looks like, and a wrapped heading or palette row silently
+       changes the widget's height and makes the whole panel jump. Content is
+       clipped to the width instead (see fit_block, and PaletteGrid._metrics).
+       The .hint rule is the deliberate exception below. */
+    #previews Static { text-wrap: nowrap; }
+    .section, ChoiceRow, PaletteGrid, Checkbox { text-wrap: nowrap; }
     .section { color: $accent; text-style: bold; padding: 1 0 0 0; }
     .field { height: 1; }
     .field Label { width: 10; content-align: left middle; }
     .field Input { width: 1fr; height: 1; border: none; background: $boost; padding: 0 1; }
     .field Input:focus { background: $panel; }
     .field Input.-invalid { color: $error; }
-    /* Three rows of eight swatches, two lines each (swatches + the selection
-       pointer under them). PaletteRow.on_mount() sets the real height from the
-       palette length, which wins over this; the value here just keeps the CSS
-       from claiming something visibly different before it does. */
-    PaletteRow { height: 6; padding: 0; }
-    PaletteRow:focus { background: $boost; }
+    /* One line per scheme (six), the selection marker living inside the
+       swatch. PaletteGrid.on_mount() sets the real height from the palette
+       length, which wins over this; the value here just keeps the CSS from
+       claiming something visibly different before it does. */
+    PaletteGrid { height: 6; padding: 0; }
+    PaletteGrid:focus { background: $boost; }
     ChoiceRow { height: 1; padding: 0; }
     ChoiceRow:focus { background: $boost; }
     Checkbox { height: 1; border: none; padding: 0; background: transparent; }
@@ -1095,20 +1290,28 @@ class SetupApp(App):
     #buttons { height: 3; align: center middle; padding: 0 1; }
     #buttons Button { margin: 0 1; }
     #status { height: 1; padding: 0 1; color: $error; }
+    /* The one place wrapping is wanted: these are prose, and they carry their
+       own newlines where a break is meant. Kept short enough to fit a 44-cell
+       panel so they do not wrap in practice either. */
     .hint { height: auto; color: $text-muted; }
     """
+    # Below this many columns the side-by-side split stops being worth it.
+    # 46 for the controls plus roughly 40 before a preview says anything useful.
+    NARROW_AT = 88
+
     BINDINGS = [
         Binding("ctrl+s", "install", "Install"),
         Binding("escape", "cancel", "Quit"),
         Binding("ctrl+q", "cancel", "Quit", show=False),
     ]
 
-    def __init__(self, answers: Answers, palette: list[tuple[str, str]], out: Path | None,
+    def __init__(self, answers: Answers, palette: list[Swatch], out: Path | None,
                  columns: int = 8, catalogue: list[Tool] | None = None,
-                 priv: str = ""):
+                 priv: str = "", palette_rows: list[str] | None = None):
         super().__init__()
         self.answers = answers
         self.palette = palette
+        self.palette_rows = palette_rows or []
         self.columns = columns
         self.catalogue = catalogue or []
         self.priv = priv
@@ -1117,25 +1320,36 @@ class SetupApp(App):
         self.previewer = Previewer()
         self._debounce = None
         self._syncing = False
+        # False until on_mount() finishes (NOT named _ready: App already has a
+        # _ready() method of its own). Textual posts Input.Changed for an
+        # Input's initial value as it mounts, and _hex_typed() treats a change as
+        # "the user is working on this accent" and points the grid at it -- so
+        # without this the secondary box, simply by mounting last, would leave
+        # the grid editing secondary before the user had touched anything.
+        self._inputs_live = False
 
     # -- layout -------------------------------------------------------------
     def compose(self) -> ComposeResult:
         yield Header()
         with Horizontal(id="body"):
             with VerticalScroll(id="controls"):
-                yield Static("Primary colour", classes="section", id="primary-title")
+                yield Static("Colours", classes="section", id="colour-title")
+                # Which accent the grid edits. A ChoiceRow rather than anything
+                # new: it already cycles on arrows/enter/click and paints its
+                # value in the colour it names.
+                yield ChoiceRow("palette_target", "editing", TARGET_CHOICES,
+                                "primary", id="palette_target")
                 with Horizontal(classes="field"):
-                    yield Label("hex")
+                    yield Label("primary")
                     yield Input(value=self.answers.primary, id="primary-hex", max_length=7)
-                yield PaletteRow("primary", self.palette, self.answers.primary,
-                                 columns=self.columns, id="primary-row")
-
-                yield Static("Secondary colour", classes="section", id="secondary-title")
                 with Horizontal(classes="field"):
-                    yield Label("hex")
+                    yield Label("secondary")
                     yield Input(value=self.answers.secondary, id="secondary-hex", max_length=7)
-                yield PaletteRow("secondary", self.palette, self.answers.secondary,
-                                 columns=self.columns, id="secondary-row")
+                yield PaletteGrid(self.palette, self.palette_rows, self.answers.primary,
+                                  self.answers.secondary, columns=self.columns,
+                                  id="palette")
+                yield Static(Text("p / s picks which accent the grid moves",
+                                  style="italic"), classes="hint")
 
                 yield Static("Machine name", classes="section")
                 with Horizontal(classes="field"):
@@ -1148,6 +1362,13 @@ class SetupApp(App):
                 yield Checkbox("└ GPU temperature", self.answers.show_temp, id="show_temp")
                 yield Checkbox("Slurm job pill", self.answers.show_slurm, id="show_slurm")
                 yield Checkbox("date / time pill", self.answers.show_datetime, id="show_datetime")
+
+                yield Static("Shell login", classes="section")
+                yield Checkbox("start hsl at login", self.answers.hsl_login,
+                               id="hsl_login")
+                yield Static(Text("herdr + the status line, every interactive\n"
+                                  "login. NO_HSL=1 skips it.", style="italic"),
+                             classes="hint")
 
                 yield Static("oh-my-posh accents", classes="section")
                 yield ChoiceRow("omp_icon_mode", "glyph mode", ICON_MODES,
@@ -1208,7 +1429,10 @@ class SetupApp(App):
         self._sync_titles()
         self._sync_choices()
         self._sync_chrome()
+        self._apply_layout(self.size.width)
         self.refresh_previews()
+        # Everything mounted, so Input.Changed from here on is the user typing.
+        self._inputs_live = True
         # Keeps the clock in the bar ticking and the GPU reading fresh while the
         # UI sits open, without which the pane looks frozen.
         self.set_interval(10.0, self.refresh_previews)
@@ -1216,13 +1440,13 @@ class SetupApp(App):
     # -- input --------------------------------------------------------------
     @on(Input.Changed, "#primary-hex")
     def _primary_typed(self, event: Input.Changed) -> None:
-        self._hex_typed(event, "primary", "#primary-row")
+        self._hex_typed(event, "primary")
 
     @on(Input.Changed, "#secondary-hex")
     def _secondary_typed(self, event: Input.Changed) -> None:
-        self._hex_typed(event, "secondary", "#secondary-row")
+        self._hex_typed(event, "secondary")
 
-    def _hex_typed(self, event: Input.Changed, field: str, row: str) -> None:
+    def _hex_typed(self, event: Input.Changed, field: str) -> None:
         if self._syncing:
             return
         value = event.value.strip()
@@ -1231,7 +1455,15 @@ class SetupApp(App):
         if HEX_RE.match(value):
             event.input.remove_class("-invalid")
             self.answers = replace(self.answers, **{field: value.lower()})
-            self.query_one(row, PaletteRow).set_value(value)
+            grid = self.query_one("#palette", PaletteGrid)
+            grid.set_value(field, value)
+            # Typing into a hex box is itself a statement about which accent you
+            # are working on, so the grid follows the cursor rather than leaving
+            # the arrows pointed at the other one. Only for real typing though:
+            # see _inputs_live, and mount-time Changed events have no focus either.
+            if self._inputs_live and event.input.has_focus:
+                grid.set_active(field)
+                self.query_one("#palette_target", ChoiceRow).set_value(field)
             self._sync_titles()
             self._sync_choices()
             self._sync_chrome()
@@ -1240,8 +1472,13 @@ class SetupApp(App):
         else:
             event.input.add_class("-invalid")
 
-    @on(PaletteRow.Picked)
-    def _swatch_picked(self, event: PaletteRow.Picked) -> None:
+    @on(PaletteGrid.TargetChanged)
+    def _target_changed(self, event: PaletteGrid.TargetChanged) -> None:
+        self.query_one("#palette_target", ChoiceRow).set_value(event.field)
+        self._sync_titles()
+
+    @on(PaletteGrid.Picked)
+    def _swatch_picked(self, event: PaletteGrid.Picked) -> None:
         self.answers = replace(self.answers, **{event.field: event.hex})
         self._syncing = True
         try:
@@ -1269,6 +1506,12 @@ class SetupApp(App):
 
     @on(ChoiceRow.Picked)
     def _choice_picked(self, event: ChoiceRow.Picked) -> None:
+        # The "editing" row is not an answer -- it only steers the grid, so it
+        # must not be replace()d onto Answers (there is no such field).
+        if event.field == "palette_target":
+            self.query_one("#palette", PaletteGrid).set_active(event.value)
+            self._sync_titles()
+            return
         self.answers = replace(self.answers, **{event.field: event.value})
         if event.field == "omp_icon_mode":
             self._sync_choices()
@@ -1304,7 +1547,10 @@ class SetupApp(App):
             "neutral": NEUTRAL_FG,
         }
         for row in self.query(ChoiceRow):
-            row.set_colours(colours if row.choices is ACCENT_CHOICES else {})
+            # The "editing" row names the two accents too, so it takes the same
+            # swatches; only the glyph-mode row (fixed/slurm) has none.
+            named = row.choices is ACCENT_CHOICES or row.choices is TARGET_CHOICES
+            row.set_colours(colours if named else {})
         slurm = self.answers.omp_icon_mode == "slurm"
         glyph = self.query_one("#omp_icon", ChoiceRow)
         glyph.disabled = slurm
@@ -1323,13 +1569,17 @@ class SetupApp(App):
             heading.styles.color = colour
 
     def _sync_titles(self) -> None:
-        """The palette name goes in the section heading -- next to the swatches
-        there is no room for it in a 46-column panel."""
-        for field in ("primary", "secondary"):
-            row = self.query_one(f"#{field}-row", PaletteRow)
-            title = Text(f"{field.capitalize()} colour  ", style="bold")
-            title.append(row.name_of_value, Style(dim=True, bold=False))
-            self.query_one(f"#{field}-title", Static).update(title)
+        """The heading names the scheme of the accent being edited.
+
+        Only that one: both at once ("catppuccin / rosewater" twice) is 43 cells
+        before the word "Colours", so it was getting clipped in a 41-cell panel.
+        The other accent is still readable from its S marker in the grid and its
+        own hex box.
+        """
+        grid = self.query_one("#palette", PaletteGrid)
+        title = Text("Colours  ", style="bold")
+        title.append(grid.label_for(grid.active), Style(bold=False))
+        self.query_one("#colour-title", Static).update(title)
 
     @on(Button.Pressed, "#install")
     def _install_pressed(self) -> None:
@@ -1340,7 +1590,15 @@ class SetupApp(App):
         self.action_cancel()
 
     def on_resize(self, event: events.Resize) -> None:
+        self._apply_layout(event.size.width)
         self.schedule_preview()
+
+    def _apply_layout(self, width: int) -> None:
+        """Stack the two columns on a terminal too narrow to hold both."""
+        try:
+            self.query_one("#body").set_class(width < self.NARROW_AT, "narrow")
+        except Exception:
+            pass
 
     # -- previews -----------------------------------------------------------
     def schedule_preview(self, delay: float = 0.12) -> None:
@@ -1350,34 +1608,72 @@ class SetupApp(App):
         self._debounce = self.set_timer(delay, self.refresh_previews)
 
     def refresh_previews(self) -> None:
-        try:
-            width = max(self.query_one("#previews").content_size.width - 4, 30)
-        except Exception:
-            width = 76
-        self._render(self.answers, width)
+        """Ask each pane's own widget how wide it is, and render to that.
+
+        Emphatically not one estimate shared by all of them. It used to be
+        `#previews`.content_size minus a hardcoded 4 (a round border plus the
+        containers' horizontal padding) -- but `.preview.wide` has no padding,
+        and the VerticalScroll's scrollbar takes two cells more, so the single
+        figure was right for the three wide panes and two cells too generous for
+        the other two. The herdr box is drawn to fill its width *exactly*, so
+        those two cells wrapped every one of its eleven lines in half.
+
+        Textual has already worked all of that out per widget; content_size is
+        the answer, and it costs nothing to ask.
+        """
+        widths: dict[str, int] = {}
+        for pane in PREVIEW_PANES:
+            try:
+                got = self.query_one(f"#{pane}").content_size.width
+            except Exception:
+                continue
+            if got > 0:
+                widths[pane] = got
+        self._render(self.answers, widths)
 
     @work(thread=True, exclusive=True, group="preview")
-    def _render(self, answers: Answers, width: int) -> None:
+    def _render(self, answers: Answers, widths: dict[str, int]) -> None:
+        def w(pane: str) -> int:
+            # The fallback is only ever used for the frame before the first
+            # layout, when the widgets genuinely have no size yet; a Resize
+            # follows immediately and re-renders with the real figures.
+            return max(widths.get(pane, 60), 4)
+
         try:
             derived = derive(answers)
             panes = {
-                "posh": self.previewer.posh(derived, answers, width),
-                "hsl-bar": self.previewer.statusline(derived, answers, width),
-                "claude": self.previewer.claude(derived, answers, width),
-                "herdr": self.previewer.herdr(derived, width),
+                "posh": self.previewer.posh(derived, answers, w("posh")),
+                "hsl-bar": self.previewer.statusline(derived, answers, w("hsl-bar")),
+                "claude": self.previewer.claude(derived, answers, w("claude")),
+                "herdr": self.previewer.herdr(derived, w("herdr")),
             }
             if self.catalogue:
-                panes["plan"] = self.previewer.plan(derived, answers, width)
+                panes["plan"] = self.previewer.plan(derived, answers, w("plan"))
+            # Nothing reaches a pane un-clipped: see fit_block().
+            panes = {k: fit_block(v, w(k)) for k, v in panes.items()}
         except Exception as exc:  # a broken preview must not take the UI down
             panes = {"posh": Text(f"preview failed: {exc}", style="red")}
-        self.call_from_thread(self._apply, panes)
+        used = {pane: w(pane) for pane in panes}
+        self.call_from_thread(self._apply, panes, used)
 
-    def _apply(self, panes: dict[str, Text]) -> None:
+    def _apply(self, panes: dict[str, Text], used: dict[str, int] | None = None) -> None:
         for widget_id, text in panes.items():
             try:
                 self.query_one(f"#{widget_id}", Static).update(text)
             except Exception:
                 pass
+        # A pane's width can still move between the worker reading it and the
+        # result landing -- a resize arriving mid-render. If any did, draw once
+        # more against the settled figures; it converges on the next pass, since
+        # that one renders to exactly the widths this one just observed.
+        for pane, was in (used or {}).items():
+            try:
+                now = self.query_one(f"#{pane}").content_size.width
+            except Exception:
+                continue
+            if now > 0 and now != was:
+                self.schedule_preview(0.05)
+                break
 
     # -- finishing ----------------------------------------------------------
     def _clear_error(self) -> None:
@@ -1426,8 +1722,10 @@ def dump(answers: Answers, width: int) -> None:
             (f"install plan  ({privilege_summary()})",
              previewer.plan(derived, answers, width)),
         ):
-            console.print(f"[bold]{title}[/bold]")
-            console.print(pane)
+            # no_wrap on the heading too: "install plan (no sudo -- ...)" is
+            # longer than a narrow --width and wrapped onto a second line.
+            console.print(Text(title, style="bold"), no_wrap=True, overflow="ellipsis")
+            console.print(fit_block(pane, width), no_wrap=True)
             console.print()
     finally:
         previewer.cleanup()
@@ -1448,6 +1746,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         derived = derive(answers)
         palette = palette_from(derived)
+        palette_rows = palette_rows_from(derived)
         columns = palette_columns(derived)
     except Exception as exc:
         print(f"cannot run {DERIVE}: {exc}", file=sys.stderr)
@@ -1458,7 +1757,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     app = SetupApp(answers, palette, args.out, columns=columns,
-                   catalogue=catalogue, priv=privilege_summary())
+                   catalogue=catalogue, priv=privilege_summary(),
+                   palette_rows=palette_rows)
     try:
         app.run()
     finally:

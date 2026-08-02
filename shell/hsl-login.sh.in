@@ -1,0 +1,58 @@
+#!/bin/bash
+#>> Rendered to .generated/shell/hsl-login.sh and linked at
+#>> ~/.config/dotfiles/hsl-login.sh, which shell/bashrc_additions.sh sources as
+#>> its very last act. @HSL_LOGIN@ is the wizard's answer, baked in at render
+#>> time -- so turning this off leaves a file that returns on its second line
+#>> rather than one that has to re-decide on every shell.
+#>>
+#>> SOURCED, never executed: every exit path below must be `return`. An `exit`
+#>> here would close the login shell it is running in.
+# Launch hsl (herdr plus the status line) at login, if that was asked for.
+#
+# This is the only thing in these dotfiles that can lock you out of your own
+# machine, so it is deliberately paranoid. Every condition has to hold; it runs
+# hsl rather than exec'ing it, so quitting herdr drops you into a normal shell
+# instead of ending the session; and NO_HSL=1 in the environment switches it off
+# without editing anything, which is the escape hatch to remember if it ever
+# does misbehave:
+#
+#     NO_HSL=1 bash -l          # a plain login shell, no herdr
+#
+HSL_LOGIN=@HSL_LOGIN@
+[ "$HSL_LOGIN" = 1 ] || return 0
+
+# The escape hatch, first so it beats everything else.
+[ -n "${NO_HSL:-}" ] && return 0
+
+# Once per login. ~/.bashrc gets re-sourced constantly (the `rebash` alias in
+# bashrc_additions.sh does exactly that), and each of those would otherwise
+# start another herdr on top of the last. Exported so subshells inherit the
+# "already handled" answer rather than each deciding again.
+[ -n "${DOTFILES_HSL_STARTED:-}" ] && return 0
+
+# Interactive shells only. This rules out `ssh host cmd`, scp/rsync (which break
+# outright if a login shell writes to stdout), cron and every script that happens
+# to source a bashrc.
+case $- in *i*) ;; *) return 0 ;; esac
+[ -n "${SSH_ORIGINAL_COMMAND:-}" ] && return 0
+
+# Already inside herdr. It sets all of these in every pane it spawns, and each
+# of those panes runs ~/.bashrc -- so without this guard the first thing a new
+# herdr pane would do is start a second herdr inside itself.
+[ -n "${HERDR_ENV:-}${HERDR_PANE_ID:-}${HERDR_SOCKET_PATH:-}${HERDR_WORKSPACE_ID:-}" ] && return 0
+
+# Inside tmux, or inside an AI coding agent's shell -- both run bash
+# interactively, and a full-screen TUI is wrong in either.
+[ -n "${TMUX:-}" ] && return 0
+[ -n "${CLAUDECODE:-}${AI_AGENT:-}" ] && return 0
+
+# A real terminal on both ends, and one that can actually draw.
+[ -t 0 ] && [ -t 1 ] || return 0
+case "${TERM:-dumb}" in dumb|unknown|"") return 0 ;; esac
+
+# And it has to be installed: hsl ships with the herdr-statusline plugin, which
+# is a separate answer in the wizard, so this can legitimately be absent.
+command -v hsl >/dev/null 2>&1 || return 0
+
+export DOTFILES_HSL_STARTED=1
+hsl

@@ -91,10 +91,12 @@ priv_resolve() {
 
 priv_summary() {
   case "$PRIV_MODE" in
-    root)         echo "running as root -- system packages available" ;;
-    passwordless) echo "sudo without a password -- system packages available" ;;
-    password)     echo "sudo available (will ask for your password once)" ;;
-    *)            echo "no sudo -- everything installs under \$HOME" ;;
+    # Kept under 40 cells: both front-ends show this as a hint, the UI's in a
+    # 41-cell panel and the wizard's on whatever terminal you have.
+    root)         echo "root -- system packages available" ;;
+    passwordless) echo "passwordless sudo -- apt available" ;;
+    password)     echo "sudo ok (asks once for a password)" ;;
+    *)            echo "no sudo -- installs under \$HOME" ;;
   esac
 }
 
@@ -159,7 +161,7 @@ TOOL_IDS=(
 )
 
 declare -A TOOL_LABEL=(
-  [rust]="Rust toolchain (cargo)"   [brew]="Homebrew (only if needed)"
+  [rust]="Rust toolchain (cargo)"   [brew]="Homebrew (if needed)"
   [ohmyposh]="oh-my-posh"           [zoxide]="zoxide (smarter cd)"
   [eza]="eza (ls)"                  [fzf]="fzf (fuzzy finder)"
   [fd]="fd (find)"                  [bat]="bat (cat)"

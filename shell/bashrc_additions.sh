@@ -107,3 +107,14 @@ unset HTTPS_PROXY
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
 [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
+
+#===============================================================================================================================
+### HSL AUTOSTART  (herdr + the status line at login, if that was asked for)
+#===============================================================================================================================
+# LAST, deliberately: when it does start herdr it blocks until you quit it, so
+# anything after this line would not run until then. install.sh renders it from
+# shell/hsl-login.sh.in with the answer baked in, so when the answer is "no" this
+# is a file that returns on its second line. NO_HSL=1 skips it either way.
+if [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/hsl-login.sh" ]; then
+  . "${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/hsl-login.sh"
+fi

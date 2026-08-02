@@ -20,7 +20,7 @@
 #
 # Two entry points, and the first one is why the bootstrap block below exists:
 #
-#     curl -fsSL albertorota.dev/install.sh | bash     # bare machine, no checkout
+#     curl -fsSL albertorota.dev/setmeup.sh | bash     # bare machine, no checkout
 #     ./install.sh                                     # from a clone
 #
 set -euo pipefail
@@ -66,7 +66,7 @@ bootstrap() {
   elif [ -e "$DOTFILES_DIR" ] && [ -n "$(ls -A "$DOTFILES_DIR" 2>/dev/null)" ]; then
     echo "ERROR: $DOTFILES_DIR already exists, is not empty, and is not a" >&2
     echo "       checkout of this repo. Move it aside, or point somewhere else:" >&2
-    echo "         curl -fsSL albertorota.dev/install.sh | DOTFILES_DIR=~/other bash" >&2
+    echo "         curl -fsSL albertorota.dev/setmeup.sh | DOTFILES_DIR=~/other bash" >&2
     exit 1
   elif command -v git >/dev/null 2>&1; then
     # A full clone, not --depth 1: this is a repo you commit to, and starting
@@ -158,6 +158,13 @@ SHOW_TEMP=1
 SHOW_SLURM=1
 SHOW_DATETIME=1
 
+# Launch hsl (herdr + the status line) from ~/.bashrc at login. OFF by default,
+# and deliberately so: it is the one answer here that changes what happens when
+# you open a terminal, and getting it wrong on a machine you reach only over ssh
+# is the difference between "wrong colours" and "cannot get a shell". Turn it on
+# per machine once you want it. shell/hsl-login.sh.in holds the guards.
+HSL_LOGIN=0
+
 # oh-my-posh accent placement: every accented part of the prompt names its own
 # colour -- primary, secondary or neutral (#d6deeb, the theme's own text colour,
 # so an unaccented element is still visible). The leading glyph additionally has
@@ -191,8 +198,8 @@ TOOLS_ONLY=0
 usage() {
   cat <<EOF
 Usage: ./install.sh [options]
-       curl -fsSL albertorota.dev/install.sh | bash
-       curl -fsSL albertorota.dev/install.sh | bash -s -- [options]
+       curl -fsSL albertorota.dev/setmeup.sh | bash
+       curl -fsSL albertorota.dev/setmeup.sh | bash -s -- [options]
 
   -r, --reconfigure     Re-ask for colours and machine name even if answers are saved.
       --primary HEX     Set the primary colour non-interactively (e.g. --primary '#78dce8').
@@ -224,8 +231,38 @@ first and hands over to the copy inside it. That is controlled by:
 EOF
 }
 
-# Only a wizard concern, so it stays here rather than in lib/derive.sh.
-swatch() { printf '\033[48;2;%sm    \033[0m' "$(hex_rgb "$1")"; }
+# Only wizard concerns, so they stay here rather than in lib/derive.sh.
+
+# How wide the terminal is, for laying the prompts out. stty on the real
+# terminal first (most accurate), then tput, then 80 -- and never below 20,
+# since a nonsense answer here would produce a nonsense layout rather than a
+# narrow one. Everything drawn by the wizard is sized from this, because a
+# wrapped row of swatches or a wrapped status bar preview is not a preview.
+term_cols() {
+  local c=""
+  if [ -n "${TTY_FD:-}" ]; then
+    c="$(stty size <&"$TTY_FD" 2>/dev/null | awk '{print $2}')"
+  fi
+  [[ "$c" =~ ^[0-9]+$ ]] && [ "$c" -ge 20 ] || c="$(tput cols 2>/dev/null || true)"
+  [[ "$c" =~ ^[0-9]+$ ]] && [ "$c" -ge 20 ] || c=80
+  printf '%s' "$c"
+}
+
+# A heading, and an optional hint on its OWN line. The hints used to be
+# parenthetical tails ("Machine name  (shown in the tmux bar and the shell
+# prompt)" is 60 cells) which wrapped on anything narrow; split in two, each
+# line fits a 44-cell terminal.
+section() {
+  printf '\n  \033[1m%s\033[0m\n' "$1"
+  [ -n "${2:-}" ] && printf '  \033[2m%s\033[0m\n' "$2"
+  printf '\n'
+}
+
+# swatch HEX [width] -- a block of colour, 4 cells unless told otherwise.
+swatch() {
+  local w="${2:-4}"
+  printf '\033[48;2;%sm%*s\033[0m' "$(hex_rgb "$1")" "$w" ""
+}
 
 # --- arg parsing --------------------------------------------------------------
 while [ $# -gt 0 ]; do
@@ -400,56 +437,93 @@ priv_resolve
 # above. They are deliberately NOT redeclared here: this file used to carry its
 # own copy of the first eight, which meant the text wizard silently offered a
 # different (and shorter) set of swatches than the Textual UI did.
-PALETTE_GRID=4   # how many swatches per line the text wizard prints
-
+# Forty-eight numbered lines is not a menu, it is a wall, so the picker is two
+# steps: choose a scheme (six lines, each showing its whole ramp as one ribbon of
+# swatches), then a colour inside it. A #rrggbb typed at either prompt is taken
+# as-is, and empty keeps what is already set -- so the fast paths stay one
+# keystroke, and nothing has to be counted.
 ask_color() {
-  local var="$1" label="$2" i choice n="${#PALETTE_HEX[@]}"
+  local var="$1" label="$2" choice row col i idx
+  local nrows="${#PALETTE_ROWS[@]}" ncols="$PALETTE_COLUMNS"
   # Split from the declaration above: inside a single `local`, the indirection
   # ${!var} is evaluated before `var` itself is usable as a name.
   local cur="${!var}"
+  # Laid out to fit: "    N) " + a 10-cell scheme name + the ribbon + " *".
+  # The scheme names are never abbreviated (a cut "catppucc" is worse than a
+  # thinner swatch), so it is the swatches that give up cells on a narrow
+  # terminal -- 4 down to 1.
+  local cols cell per
+  cols="$(term_cols)"
+  cell=$(( (cols - 20) / ncols ))
+  [ "$cell" -gt 4 ] && cell=4
+  [ "$cell" -lt 1 ] && cell=1
+
   while true; do
-    printf '\n  \033[1m%s colour\033[0m\n\n' "$label"
-    for i in "${!PALETTE_HEX[@]}"; do
-      printf '  %2d) ' "$((i + 1))"
-      swatch "${PALETTE_HEX[$i]}"
-      # The current swatch is marked with a trailing * rather than a "<- current"
-      # tail, which no longer fits now the palette prints as a grid.
-      if [ "${PALETTE_HEX[$i],,}" = "${cur,,}" ]; then
-        printf ' %-12s' "${PALETTE_NAMES[$i]}*"
-      else
-        printf ' %-12s' "${PALETTE_NAMES[$i]}"
-      fi
-      [ $(( (i + 1) % PALETTE_GRID )) -eq 0 ] && echo
+    local keep lbl
+    keep="  keep $cur"
+    lbl="$(palette_label "$cur")"
+    # The scheme name is dropped rather than wrapped when it will not fit --
+    # "catppuccin / rosewater" is 22 cells on its own.
+    [ $(( ${#keep} + ${#lbl} )) -le "$cols" ] && keep="$keep$lbl"
+    printf '\n  \033[1m%s colour\033[0m\n%s\n\n' "$label" "$keep"
+    for i in "${!PALETTE_ROWS[@]}"; do
+      printf '    %d) %-10s ' "$((i + 1))" "${PALETTE_ROWS[$i]}"
+      for (( col = 0; col < ncols; col++ )); do
+        idx=$(( i * ncols + col ))
+        swatch "${PALETTE_HEX[$idx]}" "$cell"
+      done
+      # A marker on the row the current colour lives in, so "where am I" needs
+      # no counting either.
+      [ "$(palette_group_of "$(palette_index "$cur")" 2>/dev/null)" = "${PALETTE_ROWS[$i]}" ] \
+        && printf ' *'
+      echo
     done
-    [ $(( n % PALETTE_GRID )) -eq 0 ] || echo
-    printf '\n  %2d) custom hex...        (* = current)\n\n' "$((n + 1))"
 
-    printf '  choice, or a #rrggbb value [keep %s]: ' "$cur"
+    printf '\n  scheme 1-%d, hex, or enter: ' "$nrows"
     read -r -u "$TTY_FD" choice || choice=""
+    [ -z "$choice" ] && { printf -v "$var" '%s' "$cur"; return; }
 
-    if [ -z "$choice" ]; then
-      printf -v "$var" '%s' "$cur"; return
-    elif [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$n" ]; then
-      printf -v "$var" '%s' "${PALETTE_HEX[$((choice - 1))]}"; return
-    elif [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -eq "$((n + 1))" ]; then
-      printf '  hex value: '
+    if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$nrows" ]; then
+      row=$(( choice - 1 ))
+      # Second step: the eight colours of that scheme, four to a line.
+      printf '\n    \033[1m%s\033[0m\n' "${PALETTE_ROWS[$row]}"
+      # Each cell is "N) " + the swatch + " " + a 10-cell name; fit as many
+      # across as the terminal takes, at least one.
+      per=$(( (cols - 4) / (cell + 14) ))
+      [ "$per" -lt 1 ] && per=1
+      [ "$per" -gt "$ncols" ] && per="$ncols"
+      for (( col = 0; col < ncols; col++ )); do
+        idx=$(( row * ncols + col ))
+        [ $(( col % per )) -eq 0 ] && printf '    '
+        printf '%d) ' "$((col + 1))"
+        swatch "${PALETTE_HEX[$idx]}" "$cell"
+        printf ' %-10s' "${PALETTE_NAMES[$idx]}"
+        [ $(( (col + 1) % per )) -eq 0 ] && echo
+      done
+      [ $(( ncols % per )) -eq 0 ] || echo
+      printf '\n    colour 1-%d, enter=back: ' "$ncols"
       read -r -u "$TTY_FD" choice || choice=""
+      [ -z "$choice" ] && continue
+      if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$ncols" ]; then
+        printf -v "$var" '%s' "${PALETTE_HEX[$(( row * ncols + choice - 1 ))]}"
+        return
+      fi
     fi
 
-    # Accept a hex typed either at the menu or at the custom prompt, with a
-    # bare "abc123" treated as "#abc123" since the # is easy to leave off.
+    # A hex typed at either prompt, with a bare "abc123" treated as "#abc123"
+    # since the # is easy to leave off.
     [[ "$choice" =~ ^[0-9a-fA-F]{6}$ ]] && choice="#$choice"
     if valid_hex "$choice"; then
       printf -v "$var" '%s' "$choice"; return
     fi
-    printf '  \033[31mNot a choice or a #rrggbb value.\033[0m\n'
+    printf '  \033[31mNot a scheme number or a #rrggbb value.\033[0m\n'
   done
 }
 
 ask_machine() {
   local answer
   while true; do
-    printf '\n  \033[1mMachine name\033[0m  (shown in the tmux bar and the shell prompt)\n\n'
+    section "Machine name" "shown in the bar and the prompt"
     printf '  name [%s]: ' "$MACHINE"
     read -r -u "$TTY_FD" answer || answer=""
     [ -z "$answer" ] && return
@@ -506,27 +580,30 @@ ask_choice() {
 }
 
 ask_components() {
-  printf '\n  \033[1mStatus line components\033[0m  (tmux bar + herdr-statusline, kept identical)\n\n'
+  section "Status line" "tmux bar + herdr-statusline"
   ask_bool SHOW_HOST     "  hostname pill"
   ask_bool SHOW_GPU      "  GPU usage pill"
   if [ "$SHOW_GPU" = 1 ]; then
-    ask_bool SHOW_TEMP   "    also show GPU temperature in that pill"
+    ask_bool SHOW_TEMP   "    also GPU temperature"
   else
     SHOW_TEMP=0
   fi
   ask_bool SHOW_SLURM    "  Slurm job pill"
   ask_bool SHOW_DATETIME "  date / time pill"
 
-  printf '\n  \033[1moh-my-posh accent placement\033[0m  (machine segment + bottom status chevrons)\n\n'
+  section "Shell login"
+  ask_bool HSL_LOGIN "  start hsl at login"
+
+  section "oh-my-posh accents" "machine segment + status chevrons"
   ask_choice OMP_ICON_MODE "  leading glyph" fixed slurm
   if [ "$OMP_ICON_MODE" = fixed ]; then
-    ask_choice OMP_ICON "  leading glyph colour" "${OMP_CHOICES[@]}"
+    ask_choice OMP_ICON "  glyph colour" "${OMP_CHOICES[@]}"
   else
     printf '    (slurm: primary normally, secondary inside a job shell)\n'
   fi
-  ask_choice OMP_TEXT         "  machine-name text" "${OMP_CHOICES[@]}"
-  ask_choice OMP_CHEVRON_OK   "  bottom chevrons, exit 0" "${OMP_CHOICES[@]}"
-  ask_choice OMP_CHEVRON_ERROR "  bottom chevrons, error" "${OMP_CHOICES[@]}"
+  ask_choice OMP_TEXT         "  machine text" "${OMP_CHOICES[@]}"
+  ask_choice OMP_CHEVRON_OK   "  chevrons, exit 0" "${OMP_CHOICES[@]}"
+  ask_choice OMP_CHEVRON_ERROR "  chevrons, error" "${OMP_CHOICES[@]}"
 }
 
 # The text fallback's counterpart to the UI's Tools checkboxes. Nineteen y/n
@@ -536,7 +613,7 @@ ask_components() {
 ask_tools() {
   local i id var picked line
   while true; do
-    printf '\n  \033[1mTools to install\033[0m  (%s)\n\n' "$(priv_summary)"
+    section "Tools to install" "$(priv_summary)"
     for i in "${!TOOL_IDS[@]}"; do
       id="${TOOL_IDS[$i]}"; var="TOOL_${id^^}"
       if [ "${!var}" = 1 ]; then
@@ -545,7 +622,7 @@ ask_tools() {
         printf '    %2d) [ ] \033[2m%s\033[0m\n' "$((i + 1))" "${TOOL_LABEL[$id]}"
       fi
     done
-    printf '\n  numbers to toggle off/on (space separated), or enter to accept: '
+    printf '\n  numbers to toggle, enter=ok: '
     read -r -u "$TTY_FD" line || line=""
     [ -z "$line" ] && return
     for picked in $line; do
@@ -580,57 +657,109 @@ omp_live_preview() {
       -e "s|@OMP_CHEVRON_ERR@|$OMP_CHEVRON_ERR|g" \
       "$DOTFILES/oh-my-posh/albe-monokai2.omp.json.in" > "$tmp"
 
-  # The trailing sed drops the console-title OSC oh-my-posh emits, which would
-  # otherwise print as stray text in the middle of the preview.
-  oh-my-posh print primary --config "$tmp" --shell universal 2>/dev/null \
-    | sed -e 's/\x1b\][^\x07]*\x07//g' -e 's/^/    /'
+  # --terminal-width so oh-my-posh lays its right-hand block out for the space
+  # that actually exists; left to its own guess the prompt is padded wider than
+  # the terminal and wraps. There is deliberately no `cut` as a backstop: cut
+  # counts characters, not display cells, and this stream is mostly colour
+  # escapes, so it would hack the prompt to pieces long before its visible end.
+  #
+  # Both OSC terminators are stripped. oh-my-posh emits the console title as
+  # ESC ] ... BEL *and* its git links as ESC ] 8 ; ; URL ESC \ -- handling only
+  # the BEL form left the link markers to print as literal "]8;;https://..."
+  # text in the middle of the preview.
+  local w; w=$(( $(term_cols) - 4 ))
+  [ "$w" -lt 20 ] && w=20
+  oh-my-posh print primary --config "$tmp" --shell universal \
+      --terminal-width "$w" 2>/dev/null \
+    | sed -e 's/\x1b\][^\x07\x1b]*\(\x07\|\x1b\\\)//g' \
+    | awk '{ print "    " $0 }'
   rm -f "$tmp"
 }
 
+# bar_seg WIDTH FORMAT [ARGS...] -- print one status-bar pill, but only if its
+# visible width still fits BAR_LEFT. Dropping from the right is what tmux itself
+# does with a bar too wide for the window, so a trimmed preview is still an
+# honest one; BAR_DROPPED records that something went, for the ellipsis.
+BAR_LEFT=0
+BAR_DROPPED=0
+bar_seg() {
+  local w="$1"; shift
+  if [ "$w" -gt "$BAR_LEFT" ]; then BAR_DROPPED=1; return 0; fi
+  BAR_LEFT=$(( BAR_LEFT - w ))
+  # shellcheck disable=SC2059  -- the format is ours, from the caller below
+  printf "$@"
+}
+
 show_preview() {
-  local p s icon_c text_c chev_c
+  local p s icon_c text_c chev_c cols rule
   # Everything the preview needs is a derived value, so derive them exactly the
   # way the install will -- no second, drifting copy of the colour logic here.
   derive
+  # Sized to the terminal. The rule was a flat 48 cells and the sample bar below
+  # it is wider still (~57 with every pill on), so on anything narrow they
+  # wrapped -- and a wrapped preview of a status bar is not a preview of it.
+  cols="$(term_cols)"
+  rule=$(( cols - 4 ))
+  [ "$rule" -gt 48 ] && rule=48
+  [ "$rule" -lt 8 ] && rule=8
   p="$(hex_rgb "$PRIMARY")"
   s="$(hex_rgb "$SECONDARY")"
   icon_c="$(hex_rgb "$OMP_ICON_COLOR")"
   text_c="$(hex_rgb "$OMP_TEXT_COLOR")"
   chev_c="$(hex_rgb "$OMP_CHEVRON_FG")"
-  printf '\n  \033[1mPreview\033[0m\n\n'
+  section "Preview"
   # pane border
-  printf '    \033[38;2;%sm' "$p"; printf '─%.0s' {1..48}; printf '\033[0m\n'
+  printf '    \033[38;2;%sm' "$p"
+  printf '─%.0s' $(seq "$rule")
+  printf '\033[0m\n'
   if command -v oh-my-posh >/dev/null 2>&1; then
     omp_live_preview
   else
     # oh-my-posh not installed yet -- hand-drawn approximation of just the
     # machine segment and the bottom chevron line, on the theme's #212224 panel.
-    printf '    \033[48;2;33;34;36m\033[38;2;%sm  \033[38;2;%sm%s \033[0m' \
+    printf '    \033[48;2;33;34;36m\033[38;2;%sm  \033[38;2;%sm%s \033[0m' \
       "$icon_c" "$text_c" "${MACHINE,,}"
     printf '\033[38;2;33;34;36m\033[0m\n'
     printf '    \033[38;2;33;34;36m╰─\033[38;2;%sm \033[0m\n' "$chev_c"
   fi
-  # tmux / herdr-statusline: host, gpu, slurm, clock -- only the enabled pills
-  [ "$SHOW_HOST" = 1 ] && printf '    \033[48;2;0;0;0m\033[1m\033[38;2;255;255;255m %s \033[0m' "$MACHINE"
+
+  # tmux / herdr-statusline: host, gpu, slurm, clock -- only the enabled pills,
+  # and only as many of those as the terminal has room for. The widths are the
+  # VISIBLE cell counts of each pill, counted from the literals below (the
+  # escapes around them take no cells).
+  BAR_LEFT=$rule
+  BAR_DROPPED=0
+  printf '    '
+  [ "$SHOW_HOST" = 1 ] && bar_seg $(( ${#MACHINE} + 2 )) \
+    '\033[48;2;0;0;0m\033[1m\033[38;2;255;255;255m %s \033[0m' "$MACHINE"
   if [ "$SHOW_GPU" = 1 ]; then
-    printf '\033[48;2;0;0;0m\033[38;2;%sm GPU ▰▰▱▱ 45%%' "$p"
-    [ "$SHOW_TEMP" = 1 ] && printf ' 62°'
-    printf ' \033[0m'
+    if [ "$SHOW_TEMP" = 1 ]; then
+      bar_seg 18 '\033[48;2;0;0;0m\033[38;2;%sm GPU ▰▰▱▱ 45%% 62° \033[0m' "$p"
+    else
+      bar_seg 14 '\033[48;2;0;0;0m\033[38;2;%sm GPU ▰▰▱▱ 45%% \033[0m' "$p"
+    fi
   fi
-  [ "$SHOW_SLURM" = 1 ] && printf '\033[48;2;0;0;0m\033[38;2;%sm  1 job \033[0m' "$p"
+  [ "$SHOW_SLURM" = 1 ] && bar_seg 9 \
+    '\033[48;2;0;0;0m\033[38;2;%sm  1 job \033[0m' "$p"
   if [ "$SHOW_DATETIME" = 1 ]; then
-    printf '\033[48;2;%sm\033[38;2;0;0;0m\033[0m' "$s"
-    printf '\033[48;2;%sm\033[1m\033[38;2;0;0;0m  12:34  2026-07-31 \033[0m' "$p"
+    bar_seg 22 '\033[48;2;%sm\033[38;2;0;0;0m\033[0m\033[48;2;%sm\033[1m\033[38;2;0;0;0m  12:34  2026-07-31 \033[0m' \
+      "$s" "$p"
   fi
+  [ "$BAR_DROPPED" = 1 ] && printf '\033[2m…\033[0m'
   printf '\n'
-  # Claude Code's five bubbles, in the ramp derive() just computed.
+
+  # Claude Code's five bubbles, in the ramp derive() just computed. Six cells
+  # each (four of pill, the cap glyph, a space), so they get the same budget.
+  BAR_LEFT=$rule
+  BAR_DROPPED=0
   printf '    '
   local rgb
   for rgb in "$CLAUDE_MODEL_RGB" "$CLAUDE_EFFORT_RGB" "$CLAUDE_USAGE_RGB" \
              "$CLAUDE_WEEK_RGB" "$CLAUDE_CTX_RGB"; do
-    printf '\033[38;2;%sm\033[48;2;%sm\033[38;2;0;0;0m    \033[0m\033[38;2;%sm\033[0m ' \
+    bar_seg 6 '\033[38;2;%sm\033[48;2;%sm\033[38;2;0;0;0m    \033[0m\033[38;2;%sm\033[0m ' \
       "$rgb" "$rgb" "$rgb"
   done
+  [ "$BAR_DROPPED" = 1 ] && printf '\033[2m…\033[0m'
   printf '\n\n'
 }
 
@@ -675,6 +804,7 @@ run_tui() {
   export DOTFILES PRIMARY SECONDARY MACHINE USER_NAME NEUTRAL_FG
   export SHOW_HOST SHOW_GPU SHOW_TEMP SHOW_SLURM SHOW_DATETIME
   export OMP_ICON_MODE OMP_ICON OMP_TEXT OMP_CHEVRON_OK OMP_CHEVRON_ERROR
+  export HSL_LOGIN
   # Every TOOL_<ID>, so the UI's checkboxes open on this machine's saved answers
   # and its install-plan pane resolves against them.
   tools_export
@@ -735,6 +865,11 @@ echo "  secondary $SECONDARY"
 echo "  machine   $MACHINE"
 echo "  status    host=$SHOW_HOST gpu=$SHOW_GPU temp=$SHOW_TEMP slurm=$SHOW_SLURM datetime=$SHOW_DATETIME"
 echo "  omp       glyph=$OMP_ICON_MODE/$OMP_ICON text=$OMP_TEXT chevrons=$OMP_CHEVRON_OK,$OMP_CHEVRON_ERROR"
+if [ "$HSL_LOGIN" = 1 ]; then
+  echo "  login     hsl (herdr + status line) starts at every interactive login"
+else
+  echo "  login     plain shell (hsl autostart off)"
+fi
 if [ "$INSTALL_TOOLS" = 1 ]; then
   TOOLS_ON=0
   for id in "${TOOL_IDS[@]}"; do tool_selected "$id" && TOOLS_ON=$((TOOLS_ON + 1)); done
@@ -762,6 +897,7 @@ OMP_ICON=$OMP_ICON
 OMP_TEXT=$OMP_TEXT
 OMP_CHEVRON_OK=$OMP_CHEVRON_OK
 OMP_CHEVRON_ERROR=$OMP_CHEVRON_ERROR
+HSL_LOGIN=$HSL_LOGIN
 EOF
 # One TOOL_<ID>=0|1 per catalogue entry, appended rather than spelled out in the
 # heredoc above so adding a tool needs no edit here. A tool that is not in the
@@ -882,6 +1018,7 @@ render() {
         -e "s|@MACHINE@|$MACHINE|g" \
         -e "s|@HERDR_CONFIG@|$HERDR_CONFIG|g" \
         -e "s|@SHOW_TEMP@|$SHOW_TEMP|g" \
+        -e "s|@HSL_LOGIN@|$HSL_LOGIN|g" \
         -e "s|@OMP_ICON_COLOR_JOB@|$OMP_ICON_COLOR_JOB|g" \
         -e "s|@OMP_ICON_COLOR@|$OMP_ICON_COLOR|g" \
         -e "s|@OMP_TEXT_COLOR@|$OMP_TEXT_COLOR|g" \
@@ -1008,6 +1145,12 @@ if [ -d "$DOTFILES/bin" ]; then
 fi
 
 # --- shell ---
+# Sourced by bashrc_additions.sh at the very end. Rendered rather than symlinked
+# straight out of the repo because it carries the answer (@HSL_LOGIN@) -- with it
+# baked in, an "off" answer is a file that returns immediately instead of one
+# that re-decides on every single shell start.
+render_script shell/hsl-login.sh.in shell/hsl-login.sh
+link "$GENERATED/shell/hsl-login.sh" "$XDG_CONFIG/dotfiles/hsl-login.sh"
 link "$DOTFILES/shell/bashrc_functions" "$HOME/.bashrc_functions"
 link "$DOTFILES/shell/profile"          "$HOME/.profile"
 
@@ -1063,5 +1206,16 @@ echo "  - Tools are installed by whichever route this machine can use (apt with 
 echo "    rustup/cargo, uv, release tarballs, git or Homebrew without). './install.sh"
 echo "    --reconfigure' lets you deselect any of them; 'bash lib/tools.sh --plan' shows"
 echo "    what a run would do without doing it."
+if [ "$HSL_LOGIN" = 1 ]; then
+  if command -v hsl >/dev/null 2>&1; then
+    echo "  - hsl (herdr + the status line) will start at every interactive login."
+    echo "    'NO_HSL=1 bash -l' gets you a plain shell; quitting herdr drops you into"
+    echo "    one too (it is run, not exec'd, so a login can't be lost to it)."
+  else
+    echo "  - NOTE: the hsl autostart is on, but 'hsl' is not on PATH. It ships with"
+    echo "    the herdr-statusline plugin; until that is installed the autostart just"
+    echo "    no-ops, so your logins are unaffected either way."
+  fi
+fi
 echo "  - Open a new shell (or 'source ~/.bashrc') to pick up the changes."
 print_path_hint
