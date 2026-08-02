@@ -153,16 +153,20 @@ run_priv() {
 # herdr plugins come last because they need herdr, and the file viewer wants
 # bat/delta/glow to render with.
 TOOL_IDS=(
-  rust brew
-  ohmyposh zoxide eza fzf fd bat delta glow nvtop
+  git rust brew
+  ohmyposh jq zoxide eza fzf fd bat delta glow nvtop
   neovim lazyvim
   gdown groundcontrol nvitop
+  tailscale
   herdr herdr_statusline herdr_file_viewer
 )
 
 declare -A TOOL_LABEL=(
-  [rust]="Rust toolchain (cargo)"   [brew]="Homebrew (if needed)"
-  [ohmyposh]="oh-my-posh"           [zoxide]="zoxide (smarter cd)"
+  [git]="git"                       [rust]="Rust toolchain (cargo)"
+  [brew]="Homebrew (if needed)"
+  [ohmyposh]="oh-my-posh"           [jq]="jq (JSON)"
+  [tailscale]="Tailscale (needs 'up')"
+  [zoxide]="zoxide (smarter cd)"
   [eza]="eza (ls)"                  [fzf]="fzf (fuzzy finder)"
   [fd]="fd (find)"                  [bat]="bat (cat)"
   [delta]="delta (git pager)"       [glow]="glow (markdown)"
@@ -174,8 +178,9 @@ declare -A TOOL_LABEL=(
 )
 
 declare -A TOOL_GROUP=(
-  [rust]=providers [brew]=providers
-  [ohmyposh]=shell [zoxide]=shell [eza]=shell [fzf]=shell
+  [git]=providers [rust]=providers [brew]=providers
+  [tailscale]=net
+  [ohmyposh]=shell [jq]=shell [zoxide]=shell [eza]=shell [fzf]=shell
   [fd]=shell [bat]=shell [delta]=shell [glow]=shell
   [nvtop]=gpu [nvitop]=gpu
   [neovim]=editor [lazyvim]=editor
@@ -187,7 +192,7 @@ declare -A TOOL_GROUP=(
 # bat/delta/glow are not listed under herdr_file_viewer because the plugin
 # installs and runs fine without them -- it just falls back to plain text.
 declare -A TOOL_DEPS=(
-  [lazyvim]="neovim"
+  [lazyvim]="neovim git"
   [herdr_statusline]="herdr"
   [herdr_file_viewer]="herdr"
 )
@@ -225,9 +230,12 @@ herdr_has_plugin() {
 
 tool_present() {
   case "$1" in
+    git)           have git ;;
+    tailscale)     have tailscale ;;
     rust)          have cargo ;;
     brew)          have brew || brew_prefix >/dev/null 2>&1 ;;
     ohmyposh)      have oh-my-posh ;;
+    jq)            have jq ;;
     zoxide)        have zoxide ;;
     eza)           have eza ;;
     fzf)           have fzf ;;
@@ -331,10 +339,26 @@ brew_needed() {
 # "method|detail"; an empty method means there is no route on this machine.
 tool_route() {
   case "$1" in
+    # Deliberately `have brew` rather than brew_needed(): Homebrew bootstraps
+    # itself by cloning its own repo WITH git, so letting git route through a
+    # brew that is not installed yet would be circular. An existing brew is
+    # fine.
+    git)      if [ "$AVAIL_APT" = 1 ]; then echo "apt|git"
+              elif have brew; then echo "brew|git"
+              else echo "|needs apt or an existing Homebrew"; fi ;;
+    # With privilege the official script is right: it picks the distro package
+    # and sets up the systemd unit, which is what makes a real node. Without, the
+    # static tarball still gives a working CLI and daemon, but the daemon has to
+    # be started by hand in userspace-networking mode -- print_next_steps() spells
+    # that out rather than leaving it to be discovered.
+    tailscale) if priv_available; then echo "script|tailscale.com/install.sh + systemd"
+               else echo "tarball|static binaries -> ~/.local/bin (userspace)"; fi ;;
     rust)     echo "script|rustup.rs -> ~/.cargo" ;;
     brew)     if brew_needed; then echo "git|~/.linuxbrew (sole route to something selected)"
               else echo "|not needed on this machine"; fi ;;
-    ohmyposh) echo "script|ohmyposh.dev -> ~/.local/bin" ;;
+    ohmyposh) echo "binary|oh-my-posh release -> ~/.local/bin" ;;
+    jq)       if [ "$AVAIL_APT" = 1 ]; then echo "apt|jq"
+              else echo "binary|jqlang/jq -> ~/.local/bin"; fi ;;
     herdr)    echo "script|herdr.dev -> ~/.local/bin" ;;
     zoxide)   if [ "$AVAIL_APT" = 1 ]; then echo "apt|zoxide"
               else echo "script|zoxide install.sh -> ~/.local/bin"; fi ;;
@@ -413,21 +437,54 @@ uv_install() { uv tool install --quiet "$@" && note_path "$HOME/.local/bin"; }
 
 brew_install() { brew install --quiet "$@"; }
 
+# Download a single executable straight into ~/.local/bin. Some projects ship a
+# bare binary rather than an archive -- jq is one -- so there is nothing to
+# unpack, but it still has to land somewhere on PATH and be marked executable.
+fetch_bin() {
+  local url="$1" name="$2" tmp
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/dotfiles-bin.XXXXXX")"
+  if ! curl -fsSL --retry 2 --connect-timeout 10 --max-time 120 "$url" -o "$tmp/$name"; then
+    rm -rf "$tmp"; return 1
+  fi
+  mkdir -p "$HOME/.local/bin"
+  install -m 0755 "$tmp/$name" "$HOME/.local/bin/$name"
+  rm -rf "$tmp"
+  note_path "$HOME/.local/bin"
+}
+
+# Debian's spelling of the architecture, which is what several projects name
+# their release assets with (jq: jq-linux-amd64). arch_tag() has the other one.
+arch_deb() {
+  case "$(uname -m)" in
+    x86_64|amd64) echo amd64 ;;
+    aarch64|arm64) echo arm64 ;;
+    *) echo "$(uname -m)" ;;
+  esac
+}
+
 # Pull one binary out of a release tarball and drop it in ~/.local/bin. The
 # layouts differ between projects (top level, or one directory down), so the
 # binary is found by name rather than by a hardcoded --strip-components.
 fetch_bin_from_tarball() {
-  local url="$1" binary="$2" tmp found
+  local url="$1"; shift
+  local tmp found name got=0
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/dotfiles-tool.XXXXXX")"
   if ! curl -fsSL --retry 2 --connect-timeout 10 --max-time 180 "$url" -o "$tmp/archive.tar.gz"; then
     rm -rf "$tmp"; return 1
   fi
   if ! tar -xzf "$tmp/archive.tar.gz" -C "$tmp"; then rm -rf "$tmp"; return 1; fi
-  found="$(find "$tmp" -type f -name "$binary" -perm -u+x -print -quit)"
-  if [ -z "$found" ]; then rm -rf "$tmp"; return 1; fi
   mkdir -p "$HOME/.local/bin"
-  install -m 0755 "$found" "$HOME/.local/bin/$binary"
+  # Several names, one download: Tailscale ships the CLI and the daemon in the
+  # same archive and the CLI is useless without the daemon. Succeeds if any one
+  # of them was found.
+  for name in "$@"; do
+    found="$(find "$tmp" -type f -name "$name" -perm -u+x -print -quit)"
+    [ -n "$found" ] || continue
+    install -m 0755 "$found" "$HOME/.local/bin/$name"
+    got=1
+  done
   rm -rf "$tmp"
+  [ "$got" -eq 1 ] || return 1
   note_path "$HOME/.local/bin"
 }
 
@@ -456,6 +513,34 @@ arch_tag() {
 # --- the installers -------------------------------------------------------
 # One per tool, each free to do whatever that tool needs. They return non-zero
 # on failure and the orchestrator records it; nothing here is ever fatal.
+
+install_git() {
+  local route; route="$(tool_route git)"
+  case "${route%%|*}" in
+    apt)  apt_install git ;;
+    brew) brew_install git ;;
+    *)    return 1 ;;
+  esac
+}
+
+install_tailscale() {
+  if priv_available; then
+    sudo_unlock || return 1
+    # The installer calls sudo itself; the unlock above has already primed the
+    # timestamp so it does not stop to ask again halfway through.
+    curl -fsSL https://tailscale.com/install.sh | sh >/dev/null 2>&1 || return 1
+    have tailscale
+    return
+  fi
+  local ver url
+  ver="$(curl -fsSL --retry 2 --max-time 20 'https://pkgs.tailscale.com/stable/?mode=json' 2>/dev/null \
+         | grep -oE '"TarballsVersion"[[:space:]]*:[[:space:]]*"[^"]+"' \
+         | sed -E 's/.*"([^"]+)"$/\1/')"
+  [ -n "$ver" ] || return 1
+  url="https://pkgs.tailscale.com/stable/tailscale_${ver}_$(arch_deb).tgz"
+  # Both halves: the CLI is useless without a daemon to talk to.
+  fetch_bin_from_tarball "$url" tailscale tailscaled
+}
 
 install_rust() {
   have rustup && { rustup update --no-self-update >/dev/null 2>&1 || true; }
@@ -489,10 +574,21 @@ install_brew() {
 }
 
 install_ohmyposh() {
+  # The bare release binary first, not the official install.sh. That script
+  # needs `unzip` (it fetches the themes archive as well), which a slim
+  # container or a login node may simply not have -- and the themes are not
+  # wanted here anyway, since the one theme this repo uses is rendered from its
+  # own template. The script stays as a fallback for an architecture with no
+  # published binary.
+  if fetch_bin \
+      "https://github.com/JanDeDobbeleer/oh-my-posh/releases/latest/download/posh-linux-$(arch_deb)" \
+      oh-my-posh; then
+    return 0
+  fi
+  have unzip || return 1
   mkdir -p "$HOME/.local/bin"
   curl -s https://ohmyposh.dev/install.sh | bash -s -- -d "$HOME/.local/bin" >/dev/null || return 1
   note_path "$HOME/.local/bin"
-  have oh-my-posh
 }
 
 install_herdr() {
@@ -501,6 +597,16 @@ install_herdr() {
     sh -c "$(curl -fsSL https://herdr.dev/install.sh)" >/dev/null || return 1
   note_path "$HOME/.local/bin"
   have herdr
+}
+
+install_jq() {
+  local route; route="$(tool_route jq)"
+  if [ "${route%%|*}" = apt ]; then
+    apt_install jq && return 0
+  fi
+  # /releases/latest/download/ is a permanent redirect to the newest tag, so
+  # this needs no API call and cannot be rate limited.
+  fetch_bin "https://github.com/jqlang/jq/releases/latest/download/jq-linux-$(arch_deb)" jq
 }
 
 install_zoxide() {
@@ -610,6 +716,50 @@ _install_herdr_plugin() {
 install_herdr_statusline()  { _install_herdr_plugin iiii1224/herdr-statusline; }
 install_herdr_file_viewer() { _install_herdr_plugin smarzban/herdr-file-viewer; }
 
+# --- what the setup UI's previews need ------------------------------------
+# The whole point of the preview panes is that they are the real thing rather
+# than a drawing of it -- but oh-my-posh renders the prompt pane and jq parses
+# the sample payload for the Claude status line pane, so on a machine that has
+# neither, the first thing a new user sees is a hand-drawn approximation and an
+# apology. These two therefore go on BEFORE the wizard opens, not with the rest.
+PREVIEW_TOOLS=(ohmyposh jq)
+
+install_preview_prereqs() {
+  local id route method rc any=0
+  detect_privilege
+  # This never prompts. It runs before the user has been asked anything, and
+  # demanding a sudo password before the first question is a poor greeting --
+  # so a password-sudo machine is treated as an unprivileged one here and takes
+  # the userland route, which both of these have. The real tools phase later
+  # asks once, properly, and by then the user has agreed to an install.
+  if [ "$PRIV_MODE" = password ]; then PRIV_MODE=none; SUDO=""; fi
+  providers_init
+
+  for id in "${PREVIEW_TOOLS[@]}"; do
+    tool_selected "$id" || continue
+    tool_present "$id" && continue
+    route="$(tool_route "$id")"; method="${route%%|*}"
+    [ -n "$method" ] || continue
+    if [ "$any" -eq 0 ]; then
+      echo "Fetching what the setup UI needs to draw real previews:"
+      any=1
+    fi
+    printf '  %-22s via %s ... ' "$id" "$method"
+    rc=0
+    "install_$id" >/dev/null 2>&1 || rc=$?
+    [ "$rc" -eq 0 ] && echo "ok" || echo "skipped (the preview falls back)"
+  done
+
+  # Whatever just landed has to be findable by the UI, which runs as a child of
+  # this script and inherits its PATH.
+  case ":$PATH:" in
+    *":$HOME/.local/bin:"*) ;;
+    *) PATH="$HOME/.local/bin:$PATH"; export PATH ;;
+  esac
+  [ "$any" -eq 1 ] && echo ""
+  return 0
+}
+
 # --- the plan -------------------------------------------------------------
 # Walk the catalogue in order and say what would happen to each tool, flipping
 # provider availability on as the walk passes a provider it would install --
@@ -673,11 +823,6 @@ install_tools() {
     echo "  NOTE: no curl on this machine; skipping the tools phase entirely."
     return 0
   fi
-  if ! have git && priv_available; then
-    echo "  git is needed by fzf and LazyVim; installing it first."
-    apt_install git || echo "  NOTE: could not install git."
-  fi
-
   local id route method detail rc dep blocked
   for id in "${TOOL_IDS[@]}"; do
     if ! tool_selected "$id"; then

@@ -140,6 +140,7 @@ GROUP_LABELS = {
     "gpu": "gpu",
     "editor": "editor",
     "python": "python (uv tools)",
+    "net": "network",
     "herdr": "herdr",
 }
 

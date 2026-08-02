@@ -432,6 +432,16 @@ if [ -n "$TTY_FD" ] && [ "$ASSUME_YES" -eq 0 ]; then TOOLS_CAN_PROMPT=1; fi
 export TOOLS_CAN_PROMPT
 priv_resolve
 
+# --- what the previews need -----------------------------------------------------
+# Before the wizard, deliberately. Its preview panes are the real prompt and the
+# real Claude status line, which need oh-my-posh and jq to exist; without them a
+# first-time user gets a hand-drawn approximation and a "needs jq" apology --
+# precisely what the previews exist to avoid. Cheap (two small downloads), never
+# prompts, and always optional: a failure here just restores the old fallbacks.
+if [ "$INSTALL_TOOLS" = 1 ] && [ "$INTERACTIVE" -eq 1 ]; then
+  install_preview_prereqs
+fi
+
 # --- the wizard ---------------------------------------------------------------
 # PALETTE_NAMES / PALETTE_HEX / PALETTE_COLUMNS come from lib/derive.sh, sourced
 # above. They are deliberately NOT redeclared here: this file used to carry its
@@ -915,16 +925,57 @@ echo "Saved answers to $ANSWERS"
 # which will otherwise keep saying "command not found" for something that is
 # very much installed -- the one thing that reliably makes a fresh setup look
 # broken when it is not.
-print_path_hint() {
-  local missing
+# Does this machine still need `tailscale up`? That step cannot be automated --
+# it opens a browser to authenticate the node against your tailnet -- so the
+# most this script can do is notice and say so.
+needs_tailscale_up() {
+  command -v tailscale >/dev/null 2>&1 || return 1
+  local out
+  out="$(tailscale status 2>&1 || true)"
+  # A connected node lists its peers, one IP per line. Anything else -- "Logged
+  # out.", the daemon not running, a permission error -- means there is still an
+  # `up` to run.
+  printf '%s' "$out" | grep -qE '^[[:space:]]*[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' && return 1
+  return 0
+}
+
+# One block to copy and paste when the run is done: everything left that needs a
+# human. A NEW shell needs none of it (bashrc_additions.sh sources the
+# tools-env.sh install_tools() wrote), but the terminal the install ran in will
+# otherwise keep saying "command not found" for something very much installed --
+# the one thing that reliably makes a finished setup look broken.
+print_next_steps() {
+  local missing steps=() line
   missing="$(tools_missing_path)"
-  [ -n "$missing" ] || return 0
+  [ -n "$missing" ] && \
+    steps+=("export PATH=\"$(printf '%s' "$missing" | paste -sd:):\$PATH\"")
+
+  if [ "$INSTALL_TOOLS" = 1 ] && needs_tailscale_up; then
+    if [ "$PRIV_MODE" = none ]; then
+      # No root, so no systemd unit: the daemon has to be run by hand, in
+      # userspace-networking mode and against a socket under $HOME.
+      steps+=("mkdir -p ~/.tailscale")
+      steps+=("tailscaled --tun=userspace-networking --socket=~/.tailscale/tailscaled.sock --statedir=~/.tailscale &")
+      steps+=("tailscale --socket=~/.tailscale/tailscaled.sock up")
+    else
+      steps+=("sudo tailscale up")
+    fi
+  fi
+
+  # Last, because it is what makes the shell you are in match the one every new
+  # shell will be: PATH, aliases, the prompt.
+  steps+=("source ~/.bashrc")
+
   echo ""
-  echo "  Tools landed in directories THIS shell doesn't have on PATH yet."
-  echo "  A new shell picks them up on its own; for this one, copy-paste:"
+  echo "Copy and paste this to finish:"
   echo ""
-  printf '      export PATH="%s:$PATH"\n' "$(printf '%s' "$missing" | paste -sd:)"
+  for line in "${steps[@]}"; do printf '    %s\n' "$line"; done
   echo ""
+  if [ "$HSL_LOGIN" = 1 ]; then
+    echo "  (that last line will start herdr, since hsl-at-login is on --"
+    echo "   'NO_HSL=1 source ~/.bashrc' if you would rather it did not)"
+    echo ""
+  fi
 }
 
 # Before the rendering below, not after: `herdr plugin install` creates each
@@ -944,7 +995,7 @@ fi
 if [ "$TOOLS_ONLY" -eq 1 ]; then
   echo ""
   echo "--tools-only: no config was rendered or linked."
-  print_path_hint
+  print_next_steps
   exit 0
 fi
 echo ""
@@ -1217,5 +1268,4 @@ if [ "$HSL_LOGIN" = 1 ]; then
     echo "    no-ops, so your logins are unaffected either way."
   fi
 fi
-echo "  - Open a new shell (or 'source ~/.bashrc') to pick up the changes."
-print_path_hint
+print_next_steps

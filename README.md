@@ -154,12 +154,37 @@ added to the catalogue later switches itself on (an absent answer means yes).
 
 | | |
 |---|---|
-| shell | oh-my-posh, zoxide, eza, fzf, fd, bat, delta, glow |
+| shell | oh-my-posh, jq, zoxide, eza, fzf, fd, bat, delta, glow |
+| network | Tailscale |
 | gpu | nvtop, nvitop |
 | editor | Neovim + the LazyVim starter |
 | python (uv tools) | gdown, ground-control-tui |
 | herdr | herdr, herdr-statusline, herdr-file-viewer |
-| toolchains | Rust (rustup/cargo), Homebrew — only if something needs it |
+| toolchains | git, Rust (rustup/cargo), Homebrew — only if something needs it |
+
+Tailscale is installed but **not** connected: `tailscale up` opens a browser to
+authenticate the machine, so it is left to you. The run ends with a single
+copy-and-paste block containing everything still outstanding — the `PATH`
+export for the shell you are in, the Tailscale step if one is needed, and
+`source ~/.bashrc` — so finishing is one paste rather than a hunt through the
+output:
+
+```
+Copy and paste this to finish:
+
+    export PATH="/home/you/.local/bin:$PATH"
+    sudo tailscale up
+    source ~/.bashrc
+```
+
+Without root, Tailscale still installs (static binaries) and the block gives
+the userspace-networking commands to run the daemon under `$HOME` instead.
+
+oh-my-posh and jq are fetched *before* the setup UI opens, because its
+preview panes are the real prompt and the real Claude status line — without
+those two they degrade to a hand-drawing and a "needs jq" apology. That
+pre-pass never asks for a password (both have routes that need no sudo) and
+is harmless if it fails.
 
 **Sudo is detected, not assumed.** install.sh works out whether you are root,
 have passwordless sudo, are a sudoer who has to type a password, or have no
