@@ -208,7 +208,11 @@ ask_machine() {
 }
 
 ask_bool() {
-  local var="$1" label="$2" cur="${!var}" hint answer
+  local var="$1" label="$2" hint answer
+  # Split from the declaration above, same reason as ask_color(): inside a
+  # single `local`, ${!var} is evaluated before `var` itself is usable as a
+  # name for the indirection.
+  local cur="${!var}"
   hint="y/N"; [ "$cur" = 1 ] && hint="Y/n"
   while true; do
     printf '  %s [%s]: ' "$label" "$hint"
@@ -240,6 +244,37 @@ ask_components() {
   ask_bool OMP_COLOR_CHEVRON "  colour the bottom chevrons by exit status"
 }
 
+# Renders the REAL prompt via `oh-my-posh print`, not an approximation: builds
+# a throwaway rendered copy of the template with the wizard's current answers
+# (same placeholders as render(), computed inline since the OMP_* colour
+# derivation normally happens once after the wizard, but the preview needs it
+# on every iteration) and asks oh-my-posh itself to render it, in this actual
+# shell/cwd/git-state -- so what you see is what you'll get, not a guess at it.
+# Falls back to a hand-drawn approximation if oh-my-posh isn't on PATH yet
+# (e.g. a machine being set up for the first time, before this same install.sh
+# run has had a chance to put it there).
+omp_live_preview() {
+  local icon_hex text_hex chev_fg_hex chev_err_hex tmp
+  icon_hex="$SECONDARY";  [ "$OMP_COLOR_ICON" = 1 ]    || icon_hex="$NEUTRAL_FG"
+  text_hex="$PRIMARY";    [ "$OMP_COLOR_TEXT" = 1 ]    || text_hex="$NEUTRAL_FG"
+  chev_fg_hex="$PRIMARY"; chev_err_hex="$SECONDARY"
+  [ "$OMP_COLOR_CHEVRON" = 1 ] || { chev_fg_hex="$NEUTRAL_FG"; chev_err_hex="$NEUTRAL_FG"; }
+
+  tmp="$(mktemp /tmp/dotfiles-omp-preview.XXXXXX.json)"
+  sed -e '/^#>>/d' \
+      -e "s|@PRIMARY@|$PRIMARY|g" \
+      -e "s|@SECONDARY@|$SECONDARY|g" \
+      -e "s|@MACHINE_LOWER@|${MACHINE,,}|g" \
+      -e "s|@OMP_ICON_COLOR@|$icon_hex|g" \
+      -e "s|@OMP_TEXT_COLOR@|$text_hex|g" \
+      -e "s|@OMP_CHEVRON_FG@|$chev_fg_hex|g" \
+      -e "s|@OMP_CHEVRON_ERR@|$chev_err_hex|g" \
+      "$DOTFILES/oh-my-posh/albe-monokai2.omp.json.in" > "$tmp"
+
+  oh-my-posh print primary --config "$tmp" --shell universal 2>/dev/null | sed 's/^/    /'
+  rm -f "$tmp"
+}
+
 show_preview() {
   local p s icon_c text_c chev_c
   p="$(hex_rgb "$PRIMARY")"
@@ -250,11 +285,16 @@ show_preview() {
   printf '\n  \033[1mPreview\033[0m\n\n'
   # pane border
   printf '    \033[38;2;%sm' "$p"; printf '─%.0s' {1..48}; printf '\033[0m\n'
-  # oh-my-posh prompt: machine segment then path, on the theme's #212224 panel
-  printf '    \033[48;2;33;34;36m\033[38;2;%sm  \033[38;2;%sm%s \033[0m' \\
-    "$icon_c" "$text_c" "${MACHINE,,}"
-  printf '\033[38;2;33;34;36m\033[0m\n'
-  printf '    \033[38;2;33;34;36m╰─\033[38;2;%sm \033[0m\n' "$chev_c"
+  if command -v oh-my-posh >/dev/null 2>&1; then
+    omp_live_preview
+  else
+    # oh-my-posh not installed yet -- hand-drawn approximation of just the
+    # machine segment and the bottom chevron line, on the theme's #212224 panel.
+    printf '    \033[48;2;33;34;36m\033[38;2;%sm  \033[38;2;%sm%s \033[0m' \\
+      "$icon_c" "$text_c" "${MACHINE,,}"
+    printf '\033[38;2;33;34;36m\033[0m\n'
+    printf '    \033[38;2;33;34;36m╰─\033[38;2;%sm \033[0m\n' "$chev_c"
+  fi
   # tmux / herdr-statusline: host, gpu, slurm, clock -- only the enabled pills
   [ "$SHOW_HOST" = 1 ] && printf '    \033[48;2;0;0;0m\033[1m\033[38;2;255;255;255m %s \033[0m' "$MACHINE"
   if [ "$SHOW_GPU" = 1 ]; then
