@@ -29,6 +29,18 @@ alias copy='printf "\e]52;c;$(base64 | tr -d \"\n\")\a"'
 #===============================================================================================================================
 [ -f "$HOME/.local/bin/env" ] && . "$HOME/.local/bin/env"
 export PATH="$HOME/.local/bin:$PATH"
+# uv's install directory, as install.sh actually found it. Usually the line
+# above already covers it; this is what makes it permanent on a machine where uv
+# went somewhere else (UV_INSTALL_DIR / XDG_BIN_HOME). install.sh writes it.
+[ -f "${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/uv-env.sh" ] \
+  && . "${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/uv-env.sh"
+# Same idea for everything the tools phase installed: install.sh writes this
+# with the directories those tools actually landed in. Most are already covered
+# by the lines here; this is what picks up the ones that move per machine --
+# Homebrew's prefix above all, which also needs more than PATH (MANPATH,
+# HOMEBREW_PREFIX), hence a full `brew shellenv` rather than a directory.
+[ -f "${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/tools-env.sh" ] \
+  && . "${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/tools-env.sh"
 export PATH="$HOME/.cargo/bin:$PATH"
 export PATH="$HOME/bin:$PATH"
 export PATH="$HOME/local/bin:$PATH"
@@ -52,6 +64,14 @@ if [[ $- == *i* ]]; then
 fi
 [ -f ~/.fzf.bash ] && source ~/.fzf.bash
 command -v eza >/dev/null 2>&1 && alias ls="eza $@ -lh --tree --level=1 --git --icons"
+
+# Debian and Ubuntu ship these two under different names, because the obvious
+# ones were already taken by unrelated packages. Aliased only when the real
+# name is missing, so a machine that got them from cargo/brew (where they are
+# called bat and fd) is left alone -- and so the alias never shadows a newer
+# binary that install.sh put in ~/.local/bin or ~/.cargo/bin.
+command -v bat >/dev/null 2>&1 || { command -v batcat >/dev/null 2>&1 && alias bat="batcat"; }
+command -v fd  >/dev/null 2>&1 || { command -v fdfind >/dev/null 2>&1 && alias fd="fdfind"; }
 #===============================================================================================================================
 #===============================================================================================================================
 ### TMUX

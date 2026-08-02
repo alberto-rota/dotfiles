@@ -11,6 +11,11 @@
 # The answers are saved to ~/.config/dotfiles/theme.env and reused, so later runs
 # (e.g. after editing a template) need no input. Use --reconfigure to change them.
 #
+# Asking is done by tui/configure.py, a Textual app run through `uv run` -- which
+# is why the very first thing this script does is put uv on the machine. The old
+# text wizard is still here as a fallback for when uv (or the network it needs on
+# a first run) is unavailable, so an offline machine can still be set up.
+#
 # Everything that is not themed is symlinked straight out of the repo as before.
 set -euo pipefail
 
@@ -30,6 +35,18 @@ MANAGED=()
 OLD_MANAGED=""
 [ -r "$MANIFEST" ] && OLD_MANAGED="$(cat "$MANIFEST")"
 HERDR_CONFIG="$XDG_CONFIG/herdr"
+# Sourced, not duplicated: the palette, the validators, and everything derived
+# from the answers (PRIMARY_DIM, the OMP_* colours, the four status-line strings)
+# live in one file that tui/configure.py also runs, so the live preview and the
+# rendered config are assembled by the same code. See lib/derive.sh.
+# shellcheck source=lib/derive.sh
+. "$DOTFILES/lib/derive.sh"
+# The other half of the same split: what this script PUTS ON the machine, as
+# opposed to what it configures. The catalogue, the sudo detection and every
+# install route live there, and tui/configure.py runs the same file to build
+# its checkbox list and its install-plan preview. See lib/tools.sh.
+# shellcheck source=lib/tools.sh
+. "$DOTFILES/lib/tools.sh"
 
 # --- defaults -----------------------------------------------------------------
 # The colour defaults reproduce the look this repo was committed with; the machine
@@ -48,19 +65,35 @@ SHOW_TEMP=1
 SHOW_SLURM=1
 SHOW_DATETIME=1
 
-# oh-my-posh accent placement: whether the machine segment's leading glyph and
-# its text pick up the accent colours, and whether the bottom chevron line
-# colours itself by exit status. Off falls back to a neutral foreground so the
-# element is still visible, just not accented.
-OMP_COLOR_ICON=1
-OMP_COLOR_TEXT=1
-OMP_COLOR_CHEVRON=1
-# Fallback foreground when an OMP_COLOR_* toggle is off -- the theme's own
-# default text colour (see transient_prompt in the .omp.json), not a taste.
-NEUTRAL_FG="#d6deeb"
+# oh-my-posh accent placement: every accented part of the prompt names its own
+# colour -- primary, secondary or neutral (#d6deeb, the theme's own text colour,
+# so an unaccented element is still visible). The leading glyph additionally has
+# a mode: "fixed" keeps OMP_ICON everywhere, "slurm" makes the glyph report the
+# job -- primary on a normal shell, secondary inside an allocation.
+# Deliberately EMPTY rather than pre-filled: lib/derive.sh both supplies the
+# defaults for these and migrates the older OMP_COLOR_* answers into them, and
+# it can only tell "not answered yet" from "answered" by them being unset.
+# Defaulting them here would make that migration a silent no-op and quietly
+# change the prompt on every machine set up before per-component colours.
+OMP_ICON_MODE=""
+OMP_ICON=""
+OMP_TEXT=""
+OMP_CHEVRON_OK=""
+OMP_CHEVRON_ERROR=""
+# NEUTRAL_FG, the palette, valid_hex/valid_machine, darken() and the defaults
+# and migration for the five answers above all come from lib/derive.sh.
+
+# Tools. Every TOOL_<ID> defaults to 1 -- the rule is "install the lot, deselect
+# what you don't want" -- and tools_defaults() (lib/tools.sh) fills in the ones
+# theme.env has never heard of, which is also what makes adding a tool to the
+# catalogue turn it on automatically for machines set up before it existed.
+INSTALL_TOOLS=1
 
 RECONFIGURE=0
 ASSUME_YES=0
+SKIP_UV=0
+NO_TUI=0
+TOOLS_ONLY=0
 
 usage() {
   cat <<EOF
@@ -71,40 +104,35 @@ Usage: ./install.sh [options]
       --secondary HEX   Set the secondary colour non-interactively.
       --machine NAME    Set the machine name non-interactively.
   -y, --non-interactive Never prompt; use saved answers, or the defaults if none.
+      --skip-uv         Don't install/update uv (offline machines, CI).
+      --no-tui          Use the plain text wizard instead of the Textual UI.
+      --no-tools        Only render and link config; install no tools.
+      --tools-only      Only install tools; render and link nothing.
   -h, --help            Show this message.
 
-With no options: prompts on the first run, then reuses the saved answers from
+With no options: installs uv if missing, then prompts (in the Textual UI) on the
+first run, then reuses the saved answers from
 $ANSWERS
+
+Tools are installed by whichever route this machine can actually use: apt when
+you have root or sudo, and rustup/cargo, uv, release tarballs, git clones or
+Homebrew when you don't. './install.sh --tools-only -y' shows the plan and runs
+it without touching any config; 'bash lib/tools.sh --plan' just shows it.
 EOF
 }
 
-# --- colour helpers -----------------------------------------------------------
-valid_hex() { [[ "$1" =~ ^#[0-9a-fA-F]{6}$ ]]; }
-# Machine name is substituted into sed replacements and into JSON/tmux strings,
-# so keep it to characters that are safe in all three.
-valid_machine() { [[ "$1" =~ ^[A-Za-z0-9._-]{1,24}$ ]]; }
-
-hex_rgb() { local h="${1#\#}"; printf '%d;%d;%d' "0x${h:0:2}" "0x${h:2:2}" "0x${h:4:2}"; }
-swatch()  { printf '\033[48;2;%sm    \033[0m' "$(hex_rgb "$1")"; }
-
-# Scale a colour toward black by a percentage, keeping its hue. Used for herdr's
-# sidebar rail: one token there paints both the rail and the selected row's
-# background, and the row's text is the primary colour, so the rail has to be a
-# DARKENED primary -- raw would be primary-on-primary. 50% is the balance point
-# (~3.8:1 for the bold row text on it, ~2.8:1 for the rail against the panel).
-darken() {
-  local h="${1#\#}" pct="$2" r g b
-  r=$(( 0x${h:0:2} * pct / 100 ))
-  g=$(( 0x${h:2:2} * pct / 100 ))
-  b=$(( 0x${h:4:2} * pct / 100 ))
-  printf '#%02x%02x%02x' "$r" "$g" "$b"
-}
+# Only a wizard concern, so it stays here rather than in lib/derive.sh.
+swatch() { printf '\033[48;2;%sm    \033[0m' "$(hex_rgb "$1")"; }
 
 # --- arg parsing --------------------------------------------------------------
 while [ $# -gt 0 ]; do
   case "$1" in
     -r|--reconfigure) RECONFIGURE=1 ;;
     -y|--non-interactive) ASSUME_YES=1 ;;
+    --skip-uv)   SKIP_UV=1 ;;
+    --no-tui)    NO_TUI=1 ;;
+    --no-tools)  INSTALL_TOOLS=0 ;;
+    --tools-only) TOOLS_ONLY=1 ;;
     --primary)   PRIMARY_ARG="${2:?--primary needs a value}"; shift ;;
     --secondary) SECONDARY_ARG="${2:?--secondary needs a value}"; shift ;;
     --machine)   MACHINE_ARG="${2:?--machine needs a value}"; shift ;;
@@ -113,6 +141,92 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+
+# --- uv --------------------------------------------------------------------
+# First thing this script does on a machine, before anything is asked or
+# rendered: uv is what runs the setup UI (tui/configure.py, a PEP 723 script, so
+# `uv run --script` fetches its own Python and Textual), and it is wanted on
+# every machine anyway. A failure here is never fatal -- an offline machine just
+# falls back to the text wizard further down.
+UV_ENV_FILE="$XDG_CONFIG/dotfiles/uv-env.sh"
+
+# Where the astral installer will put (or has already put) uv. Mirrors the
+# installer's own precedence, so we can find it afterwards without re-parsing
+# its output.
+uv_install_dir() {
+  if [ -n "${UV_INSTALL_DIR:-}" ]; then printf '%s' "$UV_INSTALL_DIR"
+  elif [ -n "${XDG_BIN_HOME:-}" ]; then printf '%s' "$XDG_BIN_HOME"
+  elif [ -n "${XDG_DATA_HOME:-}" ]; then printf '%s' "$XDG_DATA_HOME/../bin"
+  else printf '%s' "$HOME/.local/bin"; fi
+}
+
+# The permanent half of "put uv on PATH": a tiny file that bashrc_additions.sh
+# sources on every shell. It is written even when uv was already installed, so a
+# machine where uv landed somewhere unusual (UV_INSTALL_DIR/XDG_BIN_HOME) still
+# gets that directory on PATH for good.
+persist_uv_path() {
+  local dir="$1"
+  mkdir -p "$(dirname "$UV_ENV_FILE")"
+  cat > "$UV_ENV_FILE" <<EOF
+# GENERATED by dotfiles/install.sh -- puts uv's install directory on PATH.
+# Sourced from shell/bashrc_additions.sh (and therefore from ~/.bashrc).
+# Edit install.sh, not this file; it is rewritten on every run.
+case ":\$PATH:" in
+  *":$dir:"*) ;;
+  *) export PATH="$dir:\$PATH" ;;
+esac
+# The installer's own env file, if it wrote one (it may add more than PATH).
+[ -f "$dir/env" ] && . "$dir/env"
+EOF
+  echo "uv on PATH permanently via $UV_ENV_FILE (sourced from bashrc_additions.sh)"
+}
+
+ensure_uv() {
+  local dir; dir="$(uv_install_dir)"
+
+  # Installed by an earlier run but not on this shell's PATH yet.
+  if ! command -v uv >/dev/null 2>&1 && [ -x "$dir/uv" ]; then
+    PATH="$dir:$PATH"
+  fi
+
+  if command -v uv >/dev/null 2>&1; then
+    dir="$(dirname "$(command -v uv)")"
+    echo "uv $(uv --version 2>/dev/null | awk '{print $2}') already installed ($dir/uv)"
+  else
+    if ! command -v curl >/dev/null 2>&1; then
+      echo "NOTE: no curl on this machine, so uv can't be installed automatically."
+      return 1
+    fi
+    echo "Installing uv into $dir ..."
+    # UV_NO_MODIFY_PATH (INSTALLER_NO_MODIFY_PATH is its older name, still
+    # honoured -- both are set so this keeps working either way): left to
+    # itself the installer appends its own PATH line to ~/.bashrc, ~/.profile
+    # and friends -- and on a machine this repo has already installed,
+    # ~/.profile is a SYMLINK INTO THIS REPO, so that edit would land in
+    # tracked dotfiles. persist_uv_path() below does the same job the dotfiles
+    # way instead. It also suppresses the installer's own env file, which is
+    # why uv-env.sh exports PATH itself and only sources that file if present.
+    if ! curl -LsSf https://astral.sh/uv/install.sh \
+         | env UV_INSTALL_DIR="$dir" UV_NO_MODIFY_PATH=1 INSTALLER_NO_MODIFY_PATH=1 sh; then
+      echo "NOTE: uv install failed (offline?); continuing without it."
+      return 1
+    fi
+    PATH="$dir:$PATH"
+    command -v uv >/dev/null 2>&1 || { echo "NOTE: uv still not on PATH after install."; return 1; }
+  fi
+
+  export PATH
+  persist_uv_path "$dir"
+}
+
+HAVE_UV=0
+if [ "$SKIP_UV" -eq 1 ]; then
+  echo "Skipping the uv step (--skip-uv)."
+  command -v uv >/dev/null 2>&1 && HAVE_UV=1
+elif ensure_uv; then
+  HAVE_UV=1
+fi
+echo ""
 
 # --- load saved answers -------------------------------------------------------
 if [ -r "$ANSWERS" ]; then
@@ -134,6 +248,17 @@ done
 valid_machine "$MACHINE" || {
   echo "Invalid machine name '$MACHINE' -- want 1-24 of [A-Za-z0-9._-]." >&2; exit 2; }
 
+# Normalise the answers before anything asks about them: this is what turns a
+# theme.env written before per-component colours existed into the equivalent
+# OMP_ICON/OMP_TEXT/OMP_CHEVRON_* answers, and fills in defaults on a machine
+# with no saved answers at all. Both front-ends therefore start from real
+# values rather than from blanks, and derive() runs again after they are done.
+derive
+# Same idea for the tool answers: a theme.env written before a tool joined the
+# catalogue simply has no line for it, and "no line" has to mean "on" or a new
+# tool would never install itself on an existing machine.
+tools_defaults
+
 # --- decide whether to prompt -------------------------------------------------
 # Read from the terminal explicitly so the wizard still works under `curl | bash`.
 # /dev/tty can be present but unopenable (cron, CI, a container without a
@@ -153,9 +278,26 @@ if [ -n "$TTY_FD" ] && [ "$ASSUME_YES" -eq 0 ] \
   INTERACTIVE=1
 fi
 
+# --- what the tools phase may do about sudo -------------------------------------
+# Settled here, well before the phase itself, for two reasons: both wizards
+# print the result ("sudo available (will ask for your password once)") next to
+# the tool list, and the setup UI -- which runs next -- inherits TOOLS_CAN_PROMPT
+# and resolves its install-plan pane against it, so the plan it shows is the
+# plan that will run. Costs a couple of `sudo -n` calls, neither of which can
+# prompt. Note this is NOT the same test as INTERACTIVE: there is a terminal to
+# ask a password on even when the wizard is being skipped because answers are
+# already saved.
+TOOLS_CAN_PROMPT=0
+if [ -n "$TTY_FD" ] && [ "$ASSUME_YES" -eq 0 ]; then TOOLS_CAN_PROMPT=1; fi
+export TOOLS_CAN_PROMPT
+priv_resolve
+
 # --- the wizard ---------------------------------------------------------------
-PALETTE_NAMES=(green   mint     cyan     purple   pink     yellow   orange   peach)
-PALETTE_HEX=(  '#00ff00' '#a9dc76' '#78dce8' '#ab9df2' '#ff6188' '#ffd866' '#ff7803' '#fc9867')
+# PALETTE_NAMES / PALETTE_HEX / PALETTE_COLUMNS come from lib/derive.sh, sourced
+# above. They are deliberately NOT redeclared here: this file used to carry its
+# own copy of the first eight, which meant the text wizard silently offered a
+# different (and shorter) set of swatches than the Textual UI did.
+PALETTE_GRID=4   # how many swatches per line the text wizard prints
 
 ask_color() {
   local var="$1" label="$2" i choice n="${#PALETTE_HEX[@]}"
@@ -165,13 +307,19 @@ ask_color() {
   while true; do
     printf '\n  \033[1m%s colour\033[0m\n\n' "$label"
     for i in "${!PALETTE_HEX[@]}"; do
-      printf '    %d) ' "$((i + 1))"
+      printf '  %2d) ' "$((i + 1))"
       swatch "${PALETTE_HEX[$i]}"
-      printf '  %-7s %s' "${PALETTE_NAMES[$i]}" "${PALETTE_HEX[$i]}"
-      [ "${PALETTE_HEX[$i],,}" = "${cur,,}" ] && printf '   <- current'
-      echo
+      # The current swatch is marked with a trailing * rather than a "<- current"
+      # tail, which no longer fits now the palette prints as a grid.
+      if [ "${PALETTE_HEX[$i],,}" = "${cur,,}" ]; then
+        printf ' %-12s' "${PALETTE_NAMES[$i]}*"
+      else
+        printf ' %-12s' "${PALETTE_NAMES[$i]}"
+      fi
+      [ $(( (i + 1) % PALETTE_GRID )) -eq 0 ] && echo
     done
-    printf '    %d) custom hex...\n\n' "$((n + 1))"
+    [ $(( n % PALETTE_GRID )) -eq 0 ] || echo
+    printf '\n  %2d) custom hex...        (* = current)\n\n' "$((n + 1))"
 
     printf '  choice, or a #rrggbb value [keep %s]: ' "$cur"
     read -r -u "$TTY_FD" choice || choice=""
@@ -226,6 +374,34 @@ ask_bool() {
   done
 }
 
+# ask_choice VAR "label" opt1 opt2 ...  -- pick one of a fixed set by number or
+# by (unique) prefix, empty keeps the current value. The wizard's counterpart to
+# the UI's cycling choice rows.
+ask_choice() {
+  local var="$1" label="$2"; shift 2
+  local opts=("$@") cur="${!var}" answer i
+  while true; do
+    printf '  %s [%s]:\n' "$label" "$cur"
+    for i in "${!opts[@]}"; do
+      printf '      %d) %-10s' "$((i + 1))" "${opts[$i]}"
+      [ "${opts[$i]}" = "$cur" ] && printf ' <- current'
+      echo
+    done
+    printf '    choice: '
+    read -r -u "$TTY_FD" answer || answer=""
+    [ -z "$answer" ] && { printf -v "$var" '%s' "$cur"; return; }
+    if [[ "$answer" =~ ^[0-9]+$ ]] && [ "$answer" -ge 1 ] && [ "$answer" -le "${#opts[@]}" ]; then
+      printf -v "$var" '%s' "${opts[$((answer - 1))]}"; return
+    fi
+    for i in "${!opts[@]}"; do
+      if [ "${opts[$i]#"${answer,,}"}" != "${opts[$i]}" ]; then
+        printf -v "$var" '%s' "${opts[$i]}"; return
+      fi
+    done
+    printf '  \033[31mPick one of: %s\033[0m\n' "${opts[*]}"
+  done
+}
+
 ask_components() {
   printf '\n  \033[1mStatus line components\033[0m  (tmux bar + herdr-statusline, kept identical)\n\n'
   ask_bool SHOW_HOST     "  hostname pill"
@@ -239,9 +415,43 @@ ask_components() {
   ask_bool SHOW_DATETIME "  date / time pill"
 
   printf '\n  \033[1moh-my-posh accent placement\033[0m  (machine segment + bottom status chevrons)\n\n'
-  ask_bool OMP_COLOR_ICON    "  colour the leading glyph"
-  ask_bool OMP_COLOR_TEXT    "  colour the machine-name text"
-  ask_bool OMP_COLOR_CHEVRON "  colour the bottom chevrons by exit status"
+  ask_choice OMP_ICON_MODE "  leading glyph" fixed slurm
+  if [ "$OMP_ICON_MODE" = fixed ]; then
+    ask_choice OMP_ICON "  leading glyph colour" "${OMP_CHOICES[@]}"
+  else
+    printf '    (slurm: primary normally, secondary inside a job shell)\n'
+  fi
+  ask_choice OMP_TEXT         "  machine-name text" "${OMP_CHOICES[@]}"
+  ask_choice OMP_CHEVRON_OK   "  bottom chevrons, exit 0" "${OMP_CHOICES[@]}"
+  ask_choice OMP_CHEVRON_ERROR "  bottom chevrons, error" "${OMP_CHOICES[@]}"
+}
+
+# The text fallback's counterpart to the UI's Tools checkboxes. Nineteen y/n
+# prompts would be miserable, so it prints the list with everything already on
+# and takes numbers to switch off -- which also matches how the answer defaults
+# actually work.
+ask_tools() {
+  local i id var picked line
+  while true; do
+    printf '\n  \033[1mTools to install\033[0m  (%s)\n\n' "$(priv_summary)"
+    for i in "${!TOOL_IDS[@]}"; do
+      id="${TOOL_IDS[$i]}"; var="TOOL_${id^^}"
+      if [ "${!var}" = 1 ]; then
+        printf '    %2d) \033[1m[x]\033[0m %s\n' "$((i + 1))" "${TOOL_LABEL[$id]}"
+      else
+        printf '    %2d) [ ] \033[2m%s\033[0m\n' "$((i + 1))" "${TOOL_LABEL[$id]}"
+      fi
+    done
+    printf '\n  numbers to toggle off/on (space separated), or enter to accept: '
+    read -r -u "$TTY_FD" line || line=""
+    [ -z "$line" ] && return
+    for picked in $line; do
+      [[ "$picked" =~ ^[0-9]+$ ]] || continue
+      [ "$picked" -ge 1 ] && [ "$picked" -le "${#TOOL_IDS[@]}" ] || continue
+      id="${TOOL_IDS[$((picked - 1))]}"; var="TOOL_${id^^}"
+      if [ "${!var}" = 1 ]; then printf -v "$var" '%s' 0; else printf -v "$var" '%s' 1; fi
+    done
+  done
 }
 
 # Renders the REAL prompt via `oh-my-posh print`, not an approximation: builds
@@ -254,34 +464,36 @@ ask_components() {
 # (e.g. a machine being set up for the first time, before this same install.sh
 # run has had a chance to put it there).
 omp_live_preview() {
-  local icon_hex text_hex chev_fg_hex chev_err_hex tmp
-  icon_hex="$SECONDARY";  [ "$OMP_COLOR_ICON" = 1 ]    || icon_hex="$NEUTRAL_FG"
-  text_hex="$PRIMARY";    [ "$OMP_COLOR_TEXT" = 1 ]    || text_hex="$NEUTRAL_FG"
-  chev_fg_hex="$PRIMARY"; chev_err_hex="$SECONDARY"
-  [ "$OMP_COLOR_CHEVRON" = 1 ] || { chev_fg_hex="$NEUTRAL_FG"; chev_err_hex="$NEUTRAL_FG"; }
-
+  local tmp
   tmp="$(mktemp /tmp/dotfiles-omp-preview.XXXXXX.json)"
   sed -e '/^#>>/d' \
       -e "s|@PRIMARY@|$PRIMARY|g" \
       -e "s|@SECONDARY@|$SECONDARY|g" \
       -e "s|@MACHINE_LOWER@|${MACHINE,,}|g" \
-      -e "s|@OMP_ICON_COLOR@|$icon_hex|g" \
-      -e "s|@OMP_TEXT_COLOR@|$text_hex|g" \
-      -e "s|@OMP_CHEVRON_FG@|$chev_fg_hex|g" \
-      -e "s|@OMP_CHEVRON_ERR@|$chev_err_hex|g" \
+      -e "s|@OMP_ICON_COLOR_JOB@|$OMP_ICON_COLOR_JOB|g" \
+      -e "s|@OMP_ICON_COLOR@|$OMP_ICON_COLOR|g" \
+      -e "s|@OMP_TEXT_COLOR@|$OMP_TEXT_COLOR|g" \
+      -e "s|@OMP_CHEVRON_FG@|$OMP_CHEVRON_FG|g" \
+      -e "s|@OMP_CHEVRON_ERR@|$OMP_CHEVRON_ERR|g" \
       "$DOTFILES/oh-my-posh/albe-monokai2.omp.json.in" > "$tmp"
 
-  oh-my-posh print primary --config "$tmp" --shell universal 2>/dev/null | sed 's/^/    /'
+  # The trailing sed drops the console-title OSC oh-my-posh emits, which would
+  # otherwise print as stray text in the middle of the preview.
+  oh-my-posh print primary --config "$tmp" --shell universal 2>/dev/null \
+    | sed -e 's/\x1b\][^\x07]*\x07//g' -e 's/^/    /'
   rm -f "$tmp"
 }
 
 show_preview() {
   local p s icon_c text_c chev_c
+  # Everything the preview needs is a derived value, so derive them exactly the
+  # way the install will -- no second, drifting copy of the colour logic here.
+  derive
   p="$(hex_rgb "$PRIMARY")"
   s="$(hex_rgb "$SECONDARY")"
-  icon_c="$s";  [ "$OMP_COLOR_ICON" = 1 ] || icon_c="$(hex_rgb "$NEUTRAL_FG")"
-  text_c="$p";  [ "$OMP_COLOR_TEXT" = 1 ] || text_c="$(hex_rgb "$NEUTRAL_FG")"
-  chev_c="$p";  [ "$OMP_COLOR_CHEVRON" = 1 ] || chev_c="$(hex_rgb "$NEUTRAL_FG")"
+  icon_c="$(hex_rgb "$OMP_ICON_COLOR")"
+  text_c="$(hex_rgb "$OMP_TEXT_COLOR")"
+  chev_c="$(hex_rgb "$OMP_CHEVRON_FG")"
   printf '\n  \033[1mPreview\033[0m\n\n'
   # pane border
   printf '    \033[38;2;%sm' "$p"; printf '─%.0s' {1..48}; printf '\033[0m\n'
@@ -290,7 +502,7 @@ show_preview() {
   else
     # oh-my-posh not installed yet -- hand-drawn approximation of just the
     # machine segment and the bottom chevron line, on the theme's #212224 panel.
-    printf '    \033[48;2;33;34;36m\033[38;2;%sm  \033[38;2;%sm%s \033[0m' \\
+    printf '    \033[48;2;33;34;36m\033[38;2;%sm  \033[38;2;%sm%s \033[0m' \
       "$icon_c" "$text_c" "${MACHINE,,}"
     printf '\033[38;2;33;34;36m\033[0m\n'
     printf '    \033[38;2;33;34;36m╰─\033[38;2;%sm \033[0m\n' "$chev_c"
@@ -307,9 +519,19 @@ show_preview() {
     printf '\033[48;2;%sm\033[38;2;0;0;0m\033[0m' "$s"
     printf '\033[48;2;%sm\033[1m\033[38;2;0;0;0m  12:34  2026-07-31 \033[0m' "$p"
   fi
+  printf '\n'
+  # Claude Code's five bubbles, in the ramp derive() just computed.
+  printf '    '
+  local rgb
+  for rgb in "$CLAUDE_MODEL_RGB" "$CLAUDE_EFFORT_RGB" "$CLAUDE_USAGE_RGB" \
+             "$CLAUDE_WEEK_RGB" "$CLAUDE_CTX_RGB"; do
+    printf '\033[38;2;%sm\033[48;2;%sm\033[38;2;0;0;0m    \033[0m\033[38;2;%sm\033[0m ' \
+      "$rgb" "$rgb" "$rgb"
+  done
   printf '\n\n'
 }
-if [ "$INTERACTIVE" -eq 1 ]; then
+
+text_wizard() {
   printf '\n\033[1mdotfiles setup\033[0m\n'
   printf 'Pick the two accent colours and this machine'\''s name, then everything installs.\n'
   while true; do
@@ -317,16 +539,78 @@ if [ "$INTERACTIVE" -eq 1 ]; then
     ask_color SECONDARY "Secondary"
     ask_machine
     ask_components
+    [ "$INSTALL_TOOLS" = 1 ] && ask_tools
     show_preview
     printf '  Install with these? [\033[1mY\033[0m]es / [r]edo / [q]uit: '
     read -r -u "$TTY_FD" reply || reply=""
     case "${reply,,}" in
-      ''|y|yes) break ;;
+      ''|y|yes) return 0 ;;
       r|redo)   continue ;;
       q|quit|n|no) echo "Aborted; nothing was changed."; exit 1 ;;
       *) printf '  \033[31mAnswer y, r or q.\033[0m\n' ;;
     esac
   done
+}
+
+# --- the Textual UI -------------------------------------------------------------
+# tui/configure.py carries its own dependencies in a PEP 723 header, so `uv run
+# --script` fetches Python and Textual itself -- nothing to install by hand and
+# nothing left behind on the machine. The answers come back as a shell fragment
+# (the theme.env format) that this script sources, so the UI decides nothing
+# about how anything is rendered; it only chooses values.
+#
+# Exit codes: 0 = confirmed and $1 written, 10 = the user quit, anything else =
+# the UI could not run and the caller should fall back to text_wizard.
+TUI_CANCELLED=10
+run_tui() {
+  local out="$1" rc=0
+  command -v uv >/dev/null 2>&1 || return 1
+  [ -r "$DOTFILES/tui/configure.py" ] || return 1
+
+  # The UI reads the current answers from the environment, exactly as
+  # lib/derive.sh does when the UI shells out to it for its live preview.
+  export DOTFILES PRIMARY SECONDARY MACHINE USER_NAME NEUTRAL_FG
+  export SHOW_HOST SHOW_GPU SHOW_TEMP SHOW_SLURM SHOW_DATETIME
+  export OMP_ICON_MODE OMP_ICON OMP_TEXT OMP_CHEVRON_OK OMP_CHEVRON_ERROR
+  # Every TOOL_<ID>, so the UI's checkboxes open on this machine's saved answers
+  # and its install-plan pane resolves against them.
+  tools_export
+
+  echo "Starting the setup UI (uv run tui/configure.py) ..."
+  # Textual needs the terminal on both stdin and stdout. Under `curl | bash`
+  # neither is one, hence the /dev/tty fallback -- the same reasoning as TTY_FD
+  # above, but the child process needs real fd 0/1, not a spare descriptor.
+  if [ -t 0 ] && [ -t 1 ]; then
+    uv run --quiet --script "$DOTFILES/tui/configure.py" --out "$out" || rc=$?
+  elif [ -r /dev/tty ] && [ -w /dev/tty ]; then
+    uv run --quiet --script "$DOTFILES/tui/configure.py" --out "$out" </dev/tty >/dev/tty || rc=$?
+  else
+    return 1
+  fi
+  return "$rc"
+}
+
+if [ "$INTERACTIVE" -eq 1 ]; then
+  WIZARD_RC=0
+  if [ "$NO_TUI" -eq 1 ] || [ "$HAVE_UV" -eq 0 ]; then
+    WIZARD_RC=1
+  else
+    TUI_OUT="$(mktemp "${TMPDIR:-/tmp}/dotfiles-setup.XXXXXX.env")"
+    run_tui "$TUI_OUT" || WIZARD_RC=$?
+    if [ "$WIZARD_RC" -eq 0 ]; then
+      # shellcheck disable=SC1090
+      . "$TUI_OUT"
+    fi
+    rm -f "$TUI_OUT"
+  fi
+
+  if [ "$WIZARD_RC" -eq "$TUI_CANCELLED" ]; then
+    echo "Aborted; nothing was changed."
+    exit 1
+  elif [ "$WIZARD_RC" -ne 0 ]; then
+    [ "$NO_TUI" -eq 1 ] || echo "NOTE: the Textual UI is unavailable here; using the text wizard."
+    text_wizard
+  fi
 elif [ -n "${PRIMARY_ARG:-}${SECONDARY_ARG:-}${MACHINE_ARG:-}" ]; then
   echo "Using the values given on the command line."
 elif [ "$HAD_ANSWERS" -eq 1 ]; then
@@ -337,72 +621,24 @@ else
   echo "Using saved theme (--reconfigure to change)."
 fi
 
-PRIMARY_DIM="$(darken "$PRIMARY" 50)"
-MACHINE_LOWER="${MACHINE,,}"
-# Not prompted for: the login name is a fact about the machine, not a taste.
-USER_NAME="$(id -un 2>/dev/null || echo "${USER:-user}")"
-
-# --- oh-my-posh accent placement -----------------------------------------------
-# Each OMP_COLOR_* toggle picks between the accent colour and the neutral
-# fallback; baked in here (not left as @PRIMARY@/@SECONDARY@ in the template)
-# so the .omp.json placeholders stay a straight substitution either way.
-OMP_ICON_COLOR="$SECONDARY";  [ "$OMP_COLOR_ICON" = 1 ]    || OMP_ICON_COLOR="$NEUTRAL_FG"
-OMP_TEXT_COLOR="$PRIMARY";    [ "$OMP_COLOR_TEXT" = 1 ]    || OMP_TEXT_COLOR="$NEUTRAL_FG"
-OMP_CHEVRON_FG="$PRIMARY"
-OMP_CHEVRON_ERR="$SECONDARY"
-if [ "$OMP_COLOR_CHEVRON" != 1 ]; then OMP_CHEVRON_FG="$NEUTRAL_FG"; OMP_CHEVRON_ERR="$NEUTRAL_FG"; fi
-
-# --- status line assembly -------------------------------------------------------
-# tmux's status bar and herdr-statusline are meant to look identical (see
-# CLAUDE.md), so both are assembled here from the same SHOW_* toggles rather
-# than templated with sed conditionals, which tmux.conf/toml have no syntax for.
-# Colours are baked in as literal hex, same reasoning as the OMP_* colours above.
-# The powerline glyphs (U+E0BA/E0BC/E0BB) match the ones already hand-placed in
-# the untoggleable parts of these bars, so a toggled segment doesn't visually
-# clash with its neighbours.
-# $'...' ANSI-C quoting so these survive as exact codepoints regardless of the
-# editor/terminal in between -- raw PUA glyphs pasted straight into a shell
-# script are exactly the kind of thing that silently turns into nothing.
-CAP=$''; SEP=$''; SEP2=$''
-
-TMUX_STATUS_LEFT=""
-if [ "$SHOW_HOST" = 1 ]; then
-  TMUX_STATUS_LEFT+="#[fg=$PRIMARY,bg=#000000]${CAP}#[fg=#ffffff,bg=#000000,bold] $MACHINE #[fg=#000000,bg=$PRIMARY]${SEP}"
-fi
-TMUX_STATUS_LEFT+='#(~/.tmux/other-sessions.sh)'
-
-# "#00000t0" below is the same deliberate typo the untouched original right side
-# had: it makes tmux drop that one style (invisible, since it only covers a
-# space) rather than paint a visible box -- see herdr-statusline/config.toml.in,
-# which spells the same spot correctly since its layout differs slightly.
-TMUX_STATUS_RIGHT="#[fg=$PRIMARY,bg=#000000]${SEP}#[fg=#ffffff,bg=#00000t0] "
-[ "$SHOW_GPU" = 1 ]   && TMUX_STATUS_RIGHT+='#(~/.tmux/gpu-status.sh)'
-[ "$SHOW_SLURM" = 1 ] && TMUX_STATUS_RIGHT+='#(~/.tmux/slurm-status.sh)'
-TMUX_STATUS_RIGHT+="#[fg=#000000,bg=$PRIMARY]${SEP}"
-if [ "$SHOW_DATETIME" = 1 ]; then
-  TMUX_STATUS_RIGHT+="#[fg=#000000,bg=$PRIMARY,bold] %H:%M #[fg=#000000,bg=$PRIMARY,bold]${SEP2} %Y-%m-%d "
-fi
-TMUX_STATUS_RIGHT+="#[fg=$PRIMARY,bg=#000000]${SEP} "
-
-HSL_STATUS_LEFT=""
-if [ "$SHOW_HOST" = 1 ]; then
-  HSL_STATUS_LEFT="#[fg=$PRIMARY,bg=#000000]${CAP}#[fg=$SECONDARY,bg=#000000,bold] ${USER_NAME}#[fg=#ffffff,bg=#000000,bold]@${MACHINE} #[fg=#000000,bg=$PRIMARY]${SEP}"
-fi
-
-HSL_STATUS_RIGHT="#[fg=$PRIMARY,bg=#000000]${SEP}#[fg=#ffffff,bg=#000000] "
-[ "$SHOW_GPU" = 1 ]   && HSL_STATUS_RIGHT+='#($HERDR_PLUGIN_CONFIG_DIR/gpu-status.sh)'
-[ "$SHOW_SLURM" = 1 ] && HSL_STATUS_RIGHT+='#($HERDR_PLUGIN_CONFIG_DIR/slurm-status.sh)'
-HSL_STATUS_RIGHT+="#[fg=#000000,bg=$PRIMARY]${SEP}"
-if [ "$SHOW_DATETIME" = 1 ]; then
-  HSL_STATUS_RIGHT+="#[fg=#000000,bg=$PRIMARY,bold] %H:%M #[fg=#000000,bg=$PRIMARY,bold]${SEP2} %Y-%m-%d "
-fi
-HSL_STATUS_RIGHT+="#[fg=$PRIMARY,bg=#000000]${SEP} "
+# --- derive everything that follows from the answers ---------------------------
+# PRIMARY_DIM, MACHINE_LOWER, USER_NAME, the OMP_* colours and the four status
+# line strings, all from lib/derive.sh -- the same function tui/configure.py
+# runs for its preview, so the preview cannot disagree with what gets rendered.
+derive
 
 echo "  primary   $PRIMARY  (herdr sidebar rail $PRIMARY_DIM)"
 echo "  secondary $SECONDARY"
 echo "  machine   $MACHINE"
 echo "  status    host=$SHOW_HOST gpu=$SHOW_GPU temp=$SHOW_TEMP slurm=$SHOW_SLURM datetime=$SHOW_DATETIME"
-echo "  omp       icon=$OMP_COLOR_ICON text=$OMP_COLOR_TEXT chevron=$OMP_COLOR_CHEVRON"
+echo "  omp       glyph=$OMP_ICON_MODE/$OMP_ICON text=$OMP_TEXT chevrons=$OMP_CHEVRON_OK,$OMP_CHEVRON_ERROR"
+if [ "$INSTALL_TOOLS" = 1 ]; then
+  TOOLS_ON=0
+  for id in "${TOOL_IDS[@]}"; do tool_selected "$id" && TOOLS_ON=$((TOOLS_ON + 1)); done
+  echo "  tools     $TOOLS_ON of ${#TOOL_IDS[@]} selected"
+else
+  echo "  tools     disabled (--no-tools)"
+fi
 echo ""
 
 # --- save the answers ---------------------------------------------------------
@@ -418,11 +654,61 @@ SHOW_GPU=$SHOW_GPU
 SHOW_TEMP=$SHOW_TEMP
 SHOW_SLURM=$SHOW_SLURM
 SHOW_DATETIME=$SHOW_DATETIME
-OMP_COLOR_ICON=$OMP_COLOR_ICON
-OMP_COLOR_TEXT=$OMP_COLOR_TEXT
-OMP_COLOR_CHEVRON=$OMP_COLOR_CHEVRON
+OMP_ICON_MODE=$OMP_ICON_MODE
+OMP_ICON=$OMP_ICON
+OMP_TEXT=$OMP_TEXT
+OMP_CHEVRON_OK=$OMP_CHEVRON_OK
+OMP_CHEVRON_ERROR=$OMP_CHEVRON_ERROR
 EOF
+# One TOOL_<ID>=0|1 per catalogue entry, appended rather than spelled out in the
+# heredoc above so adding a tool needs no edit here. A tool that is not in the
+# catalogue any more drops out of the file on the next run, same as a stale
+# render gets pruned from .generated/.
+tools_answers >> "$ANSWERS"
 echo "Saved answers to $ANSWERS"
+
+# --- tools --------------------------------------------------------------------
+# Defined before the phase runs, because --tools-only exits straight after it.
+#
+# A NEW shell needs nothing: bashrc_additions.sh sources the tools-env.sh that
+# install_tools() just wrote, and already exports ~/.local/bin, ~/.cargo/bin and
+# ~/.local/nvim/bin itself. This is purely for the terminal the install ran in,
+# which will otherwise keep saying "command not found" for something that is
+# very much installed -- the one thing that reliably makes a fresh setup look
+# broken when it is not.
+print_path_hint() {
+  local missing
+  missing="$(tools_missing_path)"
+  [ -n "$missing" ] || return 0
+  echo ""
+  echo "  Tools landed in directories THIS shell doesn't have on PATH yet."
+  echo "  A new shell picks them up on its own; for this one, copy-paste:"
+  echo ""
+  printf '      export PATH="%s:$PATH"\n' "$(printf '%s' "$missing" | paste -sd:)"
+  echo ""
+}
+
+# Before the rendering below, not after: `herdr plugin install` creates each
+# plugin's config directory and drops the plugin's own defaults in it, and the
+# link() calls further down are supposed to take those paths over (backing the
+# defaults up as .bak). Installing second would mean the plugin unpacked its
+# config on top of our symlink.
+echo ""
+if [ "$INSTALL_TOOLS" = 1 ]; then
+  # TOOLS_CAN_PROMPT was settled up by the wizard, so sudo_unlock() already
+  # knows whether there is a terminal to ask a password on.
+  install_tools
+else
+  echo "Skipping the tools phase (--no-tools)."
+fi
+
+if [ "$TOOLS_ONLY" -eq 1 ]; then
+  echo ""
+  echo "--tools-only: no config was rendered or linked."
+  print_path_hint
+  exit 0
+fi
+echo ""
 
 # --- plumbing -----------------------------------------------------------------
 link() {
@@ -493,10 +779,16 @@ render() {
         -e "s|@MACHINE@|$MACHINE|g" \
         -e "s|@HERDR_CONFIG@|$HERDR_CONFIG|g" \
         -e "s|@SHOW_TEMP@|$SHOW_TEMP|g" \
+        -e "s|@OMP_ICON_COLOR_JOB@|$OMP_ICON_COLOR_JOB|g" \
         -e "s|@OMP_ICON_COLOR@|$OMP_ICON_COLOR|g" \
         -e "s|@OMP_TEXT_COLOR@|$OMP_TEXT_COLOR|g" \
         -e "s|@OMP_CHEVRON_FG@|$OMP_CHEVRON_FG|g" \
         -e "s|@OMP_CHEVRON_ERR@|$OMP_CHEVRON_ERR|g" \
+        -e "s|@CLAUDE_MODEL_RGB@|$CLAUDE_MODEL_RGB|g" \
+        -e "s|@CLAUDE_EFFORT_RGB@|$CLAUDE_EFFORT_RGB|g" \
+        -e "s|@CLAUDE_USAGE_RGB@|$CLAUDE_USAGE_RGB|g" \
+        -e "s|@CLAUDE_WEEK_RGB@|$CLAUDE_WEEK_RGB|g" \
+        -e "s|@CLAUDE_CTX_RGB@|$CLAUDE_CTX_RGB|g" \
         -e "s|@TMUX_STATUS_LEFT@|$TMUX_STATUS_LEFT|g" \
         -e "s|@TMUX_STATUS_RIGHT@|$TMUX_STATUS_RIGHT|g" \
         -e "s|@HSL_STATUS_LEFT@|$HSL_STATUS_LEFT|g" \
@@ -529,8 +821,11 @@ link "$GENERATED/tmux/slurm-status.sh"   "$HOME/.tmux/slurm-status.sh"
 # --- claude ---
 link "$DOTFILES/claude/settings.json"        "$HOME/.claude/settings.json"
 link "$DOTFILES/claude/keybindings.json"     "$HOME/.claude/keybindings.json"
-link "$DOTFILES/claude/statusline-command.sh" "$HOME/.claude/statusline-command.sh"
-chmod +x "$DOTFILES/claude/statusline-command.sh"
+# The status line is templated now: its five bubbles are the primary->secondary
+# ramp, so it is themed like everything else rather than carrying a palette of
+# its own.
+render_script claude/statusline-command.sh.in claude/statusline-command.sh
+link "$GENERATED/claude/statusline-command.sh" "$HOME/.claude/statusline-command.sh"
 # Themes are templated (JSON, so no generated-header comment is possible).
 for f in "$DOTFILES"/claude/themes/*.json.in; do
   b="$(basename "$f" .in)"
@@ -658,8 +953,12 @@ echo "  - conda init and any gcloud SDK sourcing are NOT included (machine-speci
 echo "    'conda init bash' / the gcloud installer on this machine if needed."
 echo "  - Workspace aliases (cluster-specific /anvme paths etc.) are intentionally excluded;"
 echo "    keep those per-machine or in a separate per-project config."
-echo "  - herdr: the config is synced but the file-viewer plugin is not — install it per-machine"
-echo "    with 'herdr plugin install smarzban/herdr-file-viewer', and 'herdr server reload-config'"
-echo "    to pick up a config change without restarting. Its Monokai content pane needs bat,"
-echo "    delta and glow on PATH; without them the viewer falls back to plain text."
+echo "  - herdr: 'herdr server reload-config' picks up a config change without restarting."
+echo "    The file viewer's Monokai content pane needs bat, delta and glow on PATH; the"
+echo "    tools phase installs all three, and without them the viewer falls back to plain text."
+echo "  - Tools are installed by whichever route this machine can use (apt with sudo;"
+echo "    rustup/cargo, uv, release tarballs, git or Homebrew without). './install.sh"
+echo "    --reconfigure' lets you deselect any of them; 'bash lib/tools.sh --plan' shows"
+echo "    what a run would do without doing it."
 echo "  - Open a new shell (or 'source ~/.bashrc') to pick up the changes."
+print_path_hint

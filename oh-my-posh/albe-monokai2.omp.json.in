@@ -17,7 +17,7 @@
             },
             "leading_diamond": "",
             "trailing_diamond": "",
-            "template": "{{ if .Env.SLURM_JOB_NAME }}<@OMP_ICON_COLOR@></> {{else}}<@OMP_ICON_COLOR@></> {{end}}<@OMP_TEXT_COLOR@>@MACHINE_LOWER@ </>",
+            "template": "{{ if .Env.SLURM_JOB_NAME }}<@OMP_ICON_COLOR_JOB@></> {{else}}<@OMP_ICON_COLOR@></> {{end}}<@OMP_TEXT_COLOR@>@MACHINE_LOWER@ </>",
             "foreground": "#000000",
             "background": "#212224",
             "type": "text",
@@ -458,7 +458,7 @@
             "type": "status",
             "style": "plain",
             "foreground_templates": [
-              "@OMP_CHEVRON_ERR@"
+              "{{ if gt .Code 0 }}@OMP_CHEVRON_ERR@{{ end }}"
             ]
           }
         ],
