@@ -3,4 +3,8 @@ clear
 source ~/.bashrc
 export POSH_PATH="$HOME/.cache/oh-my-posh/themes/albe-monokai2.omp.json"
 command -v oh-my-posh >/dev/null 2>&1 && eval "$(oh-my-posh init bash --config "$POSH_PATH")"
-. "$HOME/.cargo/env"
+# Guarded: on a machine with no Rust (a fresh Mac, a login node, any box where
+# the tools phase was skipped or declined) sourcing this unconditionally makes
+# every login shell open with "No such file or directory". bashrc_additions.sh
+# already puts ~/.cargo/bin on PATH, so this is only ever a top-up.
+[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"

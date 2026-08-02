@@ -30,8 +30,13 @@ input=$(cat)
 model_raw=$(echo "$input" | jq -r '.model.display_name // "Claude"')
 
 # Map verbose display names to short family labels.
+# ${1,,} would be the obvious spelling and is bash 4; this script runs under
+# whatever bash Claude Code finds, and on macOS /bin/bash is 3.2 -- where that
+# expansion is a parse error, so the status line would not merely lose its
+# capitalisation, it would fail to start at all.
 short_model_name() {
-  local lower=${1,,}
+  local lower
+  lower=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
   case "$lower" in
     *fable*)  printf 'Fable' ;;
     *opus*)   printf 'Opus' ;;
@@ -82,19 +87,44 @@ progress_bar() {
   printf '%s' "$bar"
 }
 
+# GNU date and BSD date (which is what macOS has) share no syntax for either
+# half of this, so each is tried in turn -- GNU first, since that is the common
+# case, and neither prints anything on failure.
+#
+#   epoch -> fields    GNU: date -d @N        BSD: date -r N
+#   ISO   -> epoch     GNU: date -d STR       BSD: date -j -f FMT STR
+#
+# The BSD -f formats are tried longest-first so an explicit zone wins: %z eats
+# "+0200" and "Z", and the bare format is the fallback for a naive timestamp,
+# which -u then reads as UTC. Everything is reduced to an epoch before being
+# formatted, so the displayed time is always local either way.
+_fmt_epoch() {   # <epoch> <strftime-format>
+  date -d "@$1" +"$2" 2>/dev/null || date -r "$1" +"$2" 2>/dev/null
+}
+
+_epoch_of() {    # <iso-8601> -> epoch on stdout, non-zero if unparseable
+  local ts=$1 e fmt
+  e=$(date -d "$ts" +%s 2>/dev/null) && { printf '%s' "$e"; return 0; }
+  ts=${ts%.*}                                     # drop fractional seconds
+  for fmt in '%Y-%m-%dT%H:%M:%S%z' '%Y-%m-%dT%H:%M:%SZ' '%Y-%m-%dT%H:%M:%S'; do
+    e=$(date -j -u -f "$fmt" "$ts" +%s 2>/dev/null) && { printf '%s' "$e"; return 0; }
+  done
+  return 1
+}
+
 # Parse resets_at (unix epoch or ISO-8601) into local _RESET_DATE, _RESET_DAY, _RESET_TIME.
 parse_reset_ts() {
-  local ts=$1
+  local ts=$1 epoch
   [ -z "$ts" ] && return 1
   if [[ "$ts" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
-    _RESET_DATE=$(date -d "@${ts%.*}" +%Y-%m-%d 2>/dev/null) || return 1
-    _RESET_DAY=$(date -d "@${ts%.*}" +%a 2>/dev/null)
-    _RESET_TIME=$(date -d "@${ts%.*}" +%H:%M 2>/dev/null)
+    epoch=${ts%.*}
   else
-    _RESET_DATE=$(date -d "$ts" +%Y-%m-%d 2>/dev/null) || return 1
-    _RESET_DAY=$(date -d "$ts" +%a 2>/dev/null)
-    _RESET_TIME=$(date -d "$ts" +%H:%M 2>/dev/null)
+    epoch=$(_epoch_of "$ts") || return 1
   fi
+  _RESET_DATE=$(_fmt_epoch "$epoch" %Y-%m-%d) || return 1
+  [ -n "$_RESET_DATE" ] || return 1
+  _RESET_DAY=$(_fmt_epoch "$epoch" %a)
+  _RESET_TIME=$(_fmt_epoch "$epoch" %H:%M)
 }
 
 reset_suffix() {

@@ -37,20 +37,34 @@ if [ ! -r "$MANIFEST" ]; then
   exit 0
 fi
 
-mapfile -t PATHS < "$MANIFEST"
+# A read loop rather than `mapfile -t`, which is bash 4: macOS ships 3.2. The
+# `[ -n "$line" ]` in the condition is what picks up a final line with no
+# trailing newline, which read returns non-zero for.
+PATHS=()
+while IFS= read -r line || [ -n "$line" ]; do
+  PATHS+=("$line")
+done < "$MANIFEST"
 
 MARKER_START="# >>> dotfiles bashrc_additions >>>"
 MARKER_END="# <<< dotfiles bashrc_additions <<<"
+# install.sh appends a second, separate block to ~/.bash_profile when that file
+# exists, since bash reads it INSTEAD of the ~/.profile this repo symlinks.
+PROFILE_START="# >>> dotfiles bash_profile >>>"
+PROFILE_END="# <<< dotfiles bash_profile <<<"
 BASHRC_HAS_BLOCK=0
 grep -qF "$MARKER_START" "$HOME/.bashrc" 2>/dev/null && BASHRC_HAS_BLOCK=1
+PROFILE_HAS_BLOCK=0
+grep -qF "$PROFILE_START" "$HOME/.bash_profile" 2>/dev/null && PROFILE_HAS_BLOCK=1
 
 if [ "$ASSUME_YES" -eq 0 ]; then
   echo "This will remove ${#PATHS[@]} dotfiles-managed path(s) and restore any .bak"
   echo "found alongside them, plus strip the dotfiles block from ~/.bashrc if present."
   printf 'Continue? [y/N]: '
   read -r reply || reply=""
-  case "${reply,,}" in
-    y|yes) ;;
+  # Spelled out rather than folded with ${reply,,}, which is bash 4; this script
+  # has no lib to borrow a to_lower() from and it is two extra patterns.
+  case "$reply" in
+    y|Y|yes|YES|Yes) ;;
     *) echo "Aborted; nothing was changed."; exit 1 ;;
   esac
 fi
@@ -68,9 +82,32 @@ for dst in "${PATHS[@]}"; do
   fi
 done
 
+# `sed -i` in place is GNU-only: BSD sed takes a MANDATORY backup suffix after
+# -i, so the same command line there reads the range as the suffix and deletes
+# nothing (or destroys the file, depending on how the words fall). Filtering to
+# a temp file and copying the CONTENT back is portable and, unlike a mv, keeps
+# the original inode -- which matters because ~/.bashrc may well be a symlink or
+# have permissions somebody chose.
+strip_block() {
+  local file="$1" start="$2" end="$3" tmp
+  tmp="$(mktemp "${TMPDIR:-/tmp}/dotfiles-reset.XXXXXX")"
+  if sed "/^${start}\$/,/^${end}\$/d" "$file" > "$tmp"; then
+    cat "$tmp" > "$file"
+    rm -f "$tmp"
+    return 0
+  fi
+  rm -f "$tmp"
+  return 1
+}
+
 if [ "$BASHRC_HAS_BLOCK" -eq 1 ]; then
-  sed -i "/^${MARKER_START}\$/,/^${MARKER_END}\$/d" "$HOME/.bashrc"
-  echo "Removed the dotfiles block from ~/.bashrc"
+  strip_block "$HOME/.bashrc" "$MARKER_START" "$MARKER_END" \
+    && echo "Removed the dotfiles block from ~/.bashrc"
+fi
+
+if [ "$PROFILE_HAS_BLOCK" -eq 1 ]; then
+  strip_block "$HOME/.bash_profile" "$PROFILE_START" "$PROFILE_END" \
+    && echo "Removed the dotfiles block from ~/.bash_profile"
 fi
 
 if command -v herdr >/dev/null 2>&1; then

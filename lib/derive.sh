@@ -64,16 +64,26 @@ PALETTE_HEX=(
 # also the row width the grouping above depends on -- eight per scheme.
 PALETTE_COLUMNS=8
 
+# ${var,,} is bash 4, and macOS ships bash 3.2 as /bin/bash -- which is the
+# shell this file is sourced into there. tr is the exact stand-in for the ASCII
+# these are ever asked to fold (hex digits, a hostname), at the cost of a fork,
+# so call it once per value rather than once per comparison.
+to_lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
 # Which scheme a flat index belongs to, and its "scheme/name" label. Both
 # front-ends show that label rather than a bare hex, since "monokai / pink" says
 # far more than "#ff6188".
 palette_group_of() { printf '%s' "${PALETTE_ROWS[$(( $1 / PALETTE_COLUMNS ))]}"; }
 
-# The index of a hex in the palette, or -1 for a custom colour.
+# The index of a hex in the palette, or -1 for a custom colour. Only the needle
+# is folded: every hex in PALETTE_HEX above is written lower-case, so folding
+# each of the 48 in turn would be 48 forks to answer a question the table
+# already answers.
 palette_index() {
-  local want="${1,,}" i
+  local want i
+  want="$(to_lower "$1")"
   for i in "${!PALETTE_HEX[@]}"; do
-    [ "${PALETTE_HEX[$i],,}" = "$want" ] && { printf '%s' "$i"; return 0; }
+    [ "${PALETTE_HEX[$i]}" = "$want" ] && { printf '%s' "$i"; return 0; }
   done
   printf '%s' -1
 }
@@ -137,8 +147,17 @@ accent_hex() {
 # swatches (dracula/snow, nord/snow) gives grey pills rather than invented colour.
 claude_ramp() {
   local p="${PRIMARY#\#}" s="${SECONDARY#\#}"
+  # Hex is decoded by hand rather than with strtonum(), which is a gawk
+  # extension: macOS's /usr/bin/awk is the one true awk and would abort with
+  # "calling undefined function strtonum" -- taking the whole Claude Code status
+  # line's colour ramp with it. index() into a digit string is POSIX awk.
   awk -v p="$p" -v s="$s" -v n=5 '
-    function hex(x, i) { return strtonum("0x" substr(x, i, 2)) / 255 }
+    function hex(x, i,   d, v) {
+      v = 0
+      for (d = 0; d < 2; d++)
+        v = v * 16 + index("0123456789abcdef", tolower(substr(x, i + d, 1))) - 1
+      return v / 255
+    }
     function mx(a, b, c) { return a > b ? (a > c ? a : c) : (b > c ? b : c) }
     function mn(a, b, c) { return a < b ? (a < c ? a : c) : (b < c ? b : c) }
     function torgb(hh, ss, ll, out,   q, pp) {          # HSL -> "r;g;b"
@@ -186,7 +205,7 @@ claude_ramp() {
 
 derive() {
   PRIMARY_DIM="$(darken "$PRIMARY" 50)"
-  MACHINE_LOWER="${MACHINE,,}"
+  MACHINE_LOWER="$(to_lower "$MACHINE")"
   # Not prompted for: the login name is a fact about the machine, not a taste.
   USER_NAME="${USER_NAME:-$(id -un 2>/dev/null || echo "${USER:-user}")}"
 

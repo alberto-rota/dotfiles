@@ -48,6 +48,21 @@ self_dir() {
 # Does this look like a checkout of this repo, rather than just some directory?
 is_checkout() { [ -r "$1/install.sh" ] && [ -r "$1/lib/derive.sh" ]; }
 
+# Is there a git that will actually clone? On macOS /usr/bin/git EXISTS on a
+# machine with no Xcode Command Line Tools, as a stub that pops a GUI installer
+# and fails -- so `command -v git` says yes and the clone below then dies,
+# instead of falling through to the tarball that would have worked.
+# lib/tools.sh has the same check for the same reason; it cannot be shared,
+# because at this point in the script there is no lib/ on disk to share it from.
+bootstrap_have_git() {
+  command -v git >/dev/null 2>&1 || return 1
+  [ "$(uname -s 2>/dev/null)" = Darwin ] || return 0
+  case "$(command -v git)" in
+    /usr/bin/git) xcode-select -p >/dev/null 2>&1 ;;
+    *) return 0 ;;
+  esac
+}
+
 bootstrap() {
   echo "dotfiles: no checkout around this script, fetching one."
   echo "  repo   $DOTFILES_REPO ($DOTFILES_BRANCH)"
@@ -59,7 +74,7 @@ bootstrap() {
     # Non-fatal on purpose: local edits, a diverged branch or no network are all
     # reasons to carry on with the checkout that is already there rather than to
     # refuse to install.
-    if [ -d "$DOTFILES_DIR/.git" ] && command -v git >/dev/null 2>&1; then
+    if [ -d "$DOTFILES_DIR/.git" ] && bootstrap_have_git; then
       git -C "$DOTFILES_DIR" pull --ff-only --quiet 2>/dev/null \
         || echo "  NOTE: couldn't fast-forward; using the checkout as it is."
     fi
@@ -68,15 +83,16 @@ bootstrap() {
     echo "       checkout of this repo. Move it aside, or point somewhere else:" >&2
     echo "         curl -fsSL albertorota.dev/setmeup.sh | DOTFILES_DIR=~/other bash" >&2
     exit 1
-  elif command -v git >/dev/null 2>&1; then
+  elif bootstrap_have_git; then
     # A full clone, not --depth 1: this is a repo you commit to, and starting
     # every machine off shallow just means unshallowing it later.
     git clone --branch "$DOTFILES_BRANCH" "$DOTFILES_REPO" "$DOTFILES_DIR" || {
       echo "ERROR: git clone failed." >&2; exit 1; }
   else
-    # No git yet (the tools phase installs it later). A tarball is enough to get
-    # the installer running, and the result is still a usable checkout -- just
-    # not a git one until you re-clone.
+    # No usable git yet (the tools phase installs one later; on a fresh Mac that
+    # means the Xcode Command Line Tools, which Homebrew's installer brings in).
+    # A tarball is enough to get the installer running, and the result is still
+    # a usable checkout -- just not a git one until you re-clone.
     echo "No git here; downloading a tarball instead."
     command -v curl >/dev/null 2>&1 || {
       echo "ERROR: neither git nor curl on this machine; cannot fetch the repo." >&2
@@ -147,7 +163,26 @@ HERDR_CONFIG="$XDG_CONFIG/herdr"
 # machine you are setting up for the first time.
 PRIMARY="#00ff00"
 SECONDARY="#ff7803"
-MACHINE="$(hostname -s 2>/dev/null || uname -n 2>/dev/null || echo machine)"
+
+# The default machine name is taken from the host, so it has to be MADE valid
+# rather than validated: valid_machine() wants 1-24 of [A-Za-z0-9._-], and macOS
+# hands out names like "Alberto's MacBook Pro" (spaces, an apostrophe) or a
+# 30-character Bonjour name. Rejecting those aborts the install over a default
+# nobody typed, which is not a useful answer to "set this machine up".
+# A value given with --machine, or typed at either wizard, is still validated
+# and still rejected -- that one someone chose.
+default_machine() {
+  local n
+  n="$(hostname -s 2>/dev/null || uname -n 2>/dev/null || echo machine)"
+  n="${n%%.*}"                                                 # strip a domain
+  n="$(printf '%s' "$n" | tr -cs 'A-Za-z0-9._-' '-')"          # and anything else
+  n="${n%-}"                                                   # no trailing filler
+  n="${n:0:24}"
+  n="${n%-}"                                                   # nor after truncating
+  [ -n "$n" ] || n=machine
+  printf '%s' "$n"
+}
+MACHINE="$(default_machine)"
 
 # Status line components, shared by tmux's status bar and herdr-statusline (the
 # two are meant to stay visually identical -- see CLAUDE.md). TEMP is a sub-toggle
@@ -404,12 +439,18 @@ tools_defaults
 # /dev/tty can be present but unopenable (cron, CI, a container without a
 # controlling terminal), so the open has to be allowed to fail rather than
 # aborting under `set -e`.
+# The descriptor number is hardcoded rather than allocated with `exec {TTY_FD}<&0`,
+# which is bash 4.1 and so not available on macOS. 3 is free: nothing else in
+# this script holds one open, and the /dev/tty probes only ever open it inside a
+# subshell.
 TTY_FD=""
 if [ -t 0 ]; then
-  exec {TTY_FD}<&0
+  exec 3<&0
+  TTY_FD=3
 elif [ -r /dev/tty ] && (exec 3</dev/tty) 2>/dev/null; then
   # Probed in a subshell above, so bash never prints its own redirection error.
-  exec {TTY_FD}</dev/tty
+  exec 3</dev/tty
+  TTY_FD=3
 fi
 
 INTERACTIVE=0
@@ -552,7 +593,9 @@ ask_bool() {
   while true; do
     printf '  %s [%s]: ' "$label" "$hint"
     read -r -u "$TTY_FD" answer || answer=""
-    case "${answer,,}" in
+    # to_lower() from lib/derive.sh -- ${answer,,} is bash 4 and this script has
+    # to parse under macOS's 3.2. Same everywhere a reply is folded below.
+    case "$(to_lower "$answer")" in
       '') printf -v "$var" '%s' "$cur"; return ;;
       y|yes) printf -v "$var" '%s' 1; return ;;
       n|no)  printf -v "$var" '%s' 0; return ;;
@@ -566,7 +609,7 @@ ask_bool() {
 # the UI's cycling choice rows.
 ask_choice() {
   local var="$1" label="$2"; shift 2
-  local opts=("$@") cur="${!var}" answer i
+  local opts=("$@") cur="${!var}" answer answer_lc i
   while true; do
     printf '  %s [%s]:\n' "$label" "$cur"
     for i in "${!opts[@]}"; do
@@ -580,8 +623,9 @@ ask_choice() {
     if [[ "$answer" =~ ^[0-9]+$ ]] && [ "$answer" -ge 1 ] && [ "$answer" -le "${#opts[@]}" ]; then
       printf -v "$var" '%s' "${opts[$((answer - 1))]}"; return
     fi
+    answer_lc="$(to_lower "$answer")"
     for i in "${!opts[@]}"; do
-      if [ "${opts[$i]#"${answer,,}"}" != "${opts[$i]}" ]; then
+      if [ "${opts[$i]#"$answer_lc"}" != "${opts[$i]}" ]; then
         printf -v "$var" '%s' "${opts[$i]}"; return
       fi
     done
@@ -625,11 +669,11 @@ ask_tools() {
   while true; do
     section "Tools to install" "$(priv_summary)"
     for i in "${!TOOL_IDS[@]}"; do
-      id="${TOOL_IDS[$i]}"; var="TOOL_${id^^}"
+      id="${TOOL_IDS[$i]}"; var="$(tool_var "$id")"
       if [ "${!var}" = 1 ]; then
-        printf '    %2d) \033[1m[x]\033[0m %s\n' "$((i + 1))" "${TOOL_LABEL[$id]}"
+        printf '    %2d) \033[1m[x]\033[0m %s\n' "$((i + 1))" "$(tool_label "$id")"
       else
-        printf '    %2d) [ ] \033[2m%s\033[0m\n' "$((i + 1))" "${TOOL_LABEL[$id]}"
+        printf '    %2d) [ ] \033[2m%s\033[0m\n' "$((i + 1))" "$(tool_label "$id")"
       fi
     done
     printf '\n  numbers to toggle, enter=ok: '
@@ -638,7 +682,7 @@ ask_tools() {
     for picked in $line; do
       [[ "$picked" =~ ^[0-9]+$ ]] || continue
       [ "$picked" -ge 1 ] && [ "$picked" -le "${#TOOL_IDS[@]}" ] || continue
-      id="${TOOL_IDS[$((picked - 1))]}"; var="TOOL_${id^^}"
+      id="${TOOL_IDS[$((picked - 1))]}"; var="$(tool_var "$id")"
       if [ "${!var}" = 1 ]; then printf -v "$var" '%s' 0; else printf -v "$var" '%s' 1; fi
     done
   done
@@ -654,12 +698,18 @@ ask_tools() {
 # (e.g. a machine being set up for the first time, before this same install.sh
 # run has had a chance to put it there).
 omp_live_preview() {
-  local tmp
-  tmp="$(mktemp /tmp/dotfiles-omp-preview.XXXXXX.json)"
+  # A directory with a known filename inside it, rather than `mktemp
+  # ....XXXXXX.json`: BSD mktemp only substitutes Xs at the very END of the
+  # template, so on macOS that spelling produces a file literally called
+  # "XXXXXX.json" (or an error). The .json matters -- oh-my-posh picks its
+  # config parser from the extension.
+  local dir tmp
+  dir="$(mktemp -d "${TMPDIR:-/tmp}/dotfiles-omp.XXXXXX")"
+  tmp="$dir/preview.omp.json"
   sed -e '/^#>>/d' \
       -e "s|@PRIMARY@|$PRIMARY|g" \
       -e "s|@SECONDARY@|$SECONDARY|g" \
-      -e "s|@MACHINE_LOWER@|${MACHINE,,}|g" \
+      -e "s|@MACHINE_LOWER@|$MACHINE_LOWER|g" \
       -e "s|@OMP_ICON_COLOR_JOB@|$OMP_ICON_COLOR_JOB|g" \
       -e "s|@OMP_ICON_COLOR@|$OMP_ICON_COLOR|g" \
       -e "s|@OMP_TEXT_COLOR@|$OMP_TEXT_COLOR|g" \
@@ -677,13 +727,21 @@ omp_live_preview() {
   # ESC ] ... BEL *and* its git links as ESC ] 8 ; ; URL ESC \ -- handling only
   # the BEL form left the link markers to print as literal "]8;;https://..."
   # text in the middle of the preview.
-  local w; w=$(( $(term_cols) - 4 ))
+  #
+  # The escapes are spliced in with $'...' and the pattern is an EXTENDED one,
+  # because both halves of the obvious spelling are GNU-only: BSD sed reads
+  # \x1b as a literal "x1b", and BRE alternation \| is not in POSIX at all. Two
+  # GNU-isms in one expression that would each have failed silently -- the
+  # preview would simply have grown a line of escape-code litter.
+  local w esc bel
+  w=$(( $(term_cols) - 4 ))
   [ "$w" -lt 20 ] && w=20
+  esc=$'\033'; bel=$'\007'
   oh-my-posh print primary --config "$tmp" --shell universal \
       --terminal-width "$w" 2>/dev/null \
-    | sed -e 's/\x1b\][^\x07\x1b]*\(\x07\|\x1b\\\)//g' \
+    | sed -E -e "s/${esc}\][^${bel}${esc}]*(${bel}|${esc}\\\\)//g" \
     | awk '{ print "    " $0 }'
-  rm -f "$tmp"
+  rm -rf "$dir"
 }
 
 # bar_seg WIDTH FORMAT [ARGS...] -- print one status-bar pill, but only if its
@@ -728,7 +786,7 @@ show_preview() {
     # oh-my-posh not installed yet -- hand-drawn approximation of just the
     # machine segment and the bottom chevron line, on the theme's #212224 panel.
     printf '    \033[48;2;33;34;36m\033[38;2;%sm  \033[38;2;%sm%s \033[0m' \
-      "$icon_c" "$text_c" "${MACHINE,,}"
+      "$icon_c" "$text_c" "$MACHINE_LOWER"
     printf '\033[38;2;33;34;36m\033[0m\n'
     printf '    \033[38;2;33;34;36m╰─\033[38;2;%sm \033[0m\n' "$chev_c"
   fi
@@ -785,9 +843,9 @@ text_wizard() {
     show_preview
     printf '  Install with these? [\033[1mY\033[0m]es / [r]edo / [q]uit: '
     read -r -u "$TTY_FD" reply || reply=""
-    case "${reply,,}" in
-      ''|y|yes) return 0 ;;
-      r|redo)   continue ;;
+    case "$(to_lower "$reply")" in
+      ''|y|yes)    return 0 ;;
+      r|redo)      continue ;;
       q|quit|n|no) echo "Aborted; nothing was changed."; exit 1 ;;
       *) printf '  \033[31mAnswer y, r or q.\033[0m\n' ;;
     esac
@@ -838,13 +896,17 @@ if [ "$INTERACTIVE" -eq 1 ]; then
   if [ "$NO_TUI" -eq 1 ] || [ "$HAVE_UV" -eq 0 ]; then
     WIZARD_RC=1
   else
-    TUI_OUT="$(mktemp "${TMPDIR:-/tmp}/dotfiles-setup.XXXXXX.env")"
+    # A directory, not `mktemp ...XXXXXX.env` -- BSD mktemp only substitutes a
+    # RUN OF Xs at the end of the template, so that spelling does not produce a
+    # unique name on macOS. Same reasoning as omp_live_preview().
+    TUI_DIR="$(mktemp -d "${TMPDIR:-/tmp}/dotfiles-setup.XXXXXX")"
+    TUI_OUT="$TUI_DIR/answers.env"
     run_tui "$TUI_OUT" || WIZARD_RC=$?
-    if [ "$WIZARD_RC" -eq 0 ]; then
+    if [ "$WIZARD_RC" -eq 0 ] && [ -r "$TUI_OUT" ]; then
       # shellcheck disable=SC1090
       . "$TUI_OUT"
     fi
-    rm -f "$TUI_OUT"
+    rm -rf "$TUI_DIR"
   fi
 
   if [ "$WIZARD_RC" -eq "$TUI_CANCELLED" ]; then
@@ -948,10 +1010,18 @@ print_next_steps() {
   local missing steps=() line
   missing="$(tools_missing_path)"
   [ -n "$missing" ] && \
-    steps+=("export PATH=\"$(printf '%s' "$missing" | paste -sd:):\$PATH\"")
+    # The trailing "-" is not decoration: GNU paste defaults to stdin, BSD paste
+    # requires a file operand and prints its usage without one.
+    steps+=("export PATH=\"$(printf '%s' "$missing" | paste -sd: -):\$PATH\"")
 
   if [ "$INSTALL_TOOLS" = 1 ] && needs_tailscale_up; then
-    if [ "$PRIV_MODE" = none ]; then
+    if is_mac; then
+      # The brew formula ships a launchd service rather than a systemd unit, and
+      # it is not started for you -- `tailscale up` against a daemon that was
+      # never launched just times out.
+      steps+=("sudo brew services start tailscale")
+      steps+=("tailscale up")
+    elif [ "$PRIV_MODE" = none ]; then
       # No root, so no systemd unit: the daemon has to be run by hand, in
       # userspace-networking mode and against a socket under $HOME.
       steps+=("mkdir -p ~/.tailscale")
@@ -1090,10 +1160,20 @@ render() {
 }
 
 # A shebang must stay on line 1, so scripts get their header after it instead.
+#
+# Spliced with head/tail rather than `sed -i "1a ..."`, which is GNU twice over:
+# BSD sed's -i takes a mandatory backup suffix (so -i "1a..." would treat the
+# script as the suffix and the filename as the program), and its `a` command
+# wants a backslash and a real newline before the text.
 render_script() {
   render "$1" "$2"
-  local out="$GENERATED/$2"
-  sed -i "1a # GENERATED by dotfiles/install.sh from $1 -- do not edit; edit the template." "$out"
+  local out="$GENERATED/$2" tmp="$GENERATED/$2.tmp"
+  {
+    head -n 1 "$out"
+    echo "# GENERATED by dotfiles/install.sh from $1 -- do not edit; edit the template."
+    tail -n +2 "$out"
+  } > "$tmp"
+  mv "$tmp" "$out"
   chmod +x "$out"
 }
 
@@ -1216,6 +1296,37 @@ if ! grep -qF "$MARKER" "$HOME/.bashrc" 2>/dev/null; then
   echo "Appended source line to ~/.bashrc"
 else
   echo "~/.bashrc already sources dotfiles additions, skipping"
+fi
+
+# A bash LOGIN shell reads the FIRST of ~/.bash_profile, ~/.bash_login,
+# ~/.profile that exists and stops there. This repo symlinks ~/.profile (which
+# sources ~/.bashrc), so on a machine that already has a ~/.bash_profile none of
+# the above is ever read and the whole install looks like it did nothing.
+#
+# That is mostly a macOS problem, because Terminal.app opens a LOGIN shell for
+# every window -- on Linux the terminal usually starts an interactive non-login
+# shell, which reads ~/.bashrc directly -- but the trap is the same on both, so
+# the fix is not conditioned on the platform.
+#
+# Only ever appended to a ~/.bash_profile that ALREADY EXISTS: creating one
+# would take the symlinked ~/.profile out of the chain rather than put it in.
+PROFILE_MARKER="# >>> dotfiles bash_profile >>>"
+if [ -f "$HOME/.bash_profile" ]; then
+  if grep -qF "$PROFILE_MARKER" "$HOME/.bash_profile" 2>/dev/null; then
+    echo "~/.bash_profile already chains to ~/.bashrc, skipping"
+  elif grep -qE '(^|[^-[:alnum:]_])~?/?\.?bashrc' "$HOME/.bash_profile" 2>/dev/null; then
+    echo "~/.bash_profile already mentions .bashrc, leaving it alone"
+  else
+    {
+      echo ""
+      echo "$PROFILE_MARKER"
+      echo "# bash reads this file INSTEAD of ~/.profile for a login shell, so the"
+      echo "# dotfiles additions have to be picked up from here as well."
+      echo '[ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"'
+      echo "# <<< dotfiles bash_profile <<<"
+    } >> "$HOME/.bash_profile"
+    echo "Appended a ~/.bashrc source line to ~/.bash_profile (it shadows ~/.profile)"
+  fi
 fi
 
 # --- prune ---

@@ -15,16 +15,42 @@
 #
 # --- how a route is chosen ------------------------------------------------
 # Every tool has an ordered list of routes and takes the first one this machine
-# can actually use. The system route (apt) is only ever reachable with root or
-# sudo; every other route (rustup/cargo, uv, a release tarball, a git clone,
-# Homebrew) lands entirely inside $HOME and needs no privilege at all. That is
-# the whole of the sudo/no-sudo split -- there is no second, parallel
-# "unprivileged installer", just a route list whose first entry drops out.
+# can actually use. The system route (apt, or Homebrew on macOS) is only ever
+# reachable with root or sudo; every other route (rustup/cargo, uv, a release
+# tarball, a git clone) lands entirely inside $HOME and needs no privilege at
+# all. That is the whole of the sudo/no-sudo split -- there is no second,
+# parallel "unprivileged installer", just a route list whose first entry drops
+# out.
 #
-# apt is the only system package manager wired up. On a dnf/pacman box the
-# system route is simply unavailable and everything falls through to the
+# apt is the only system package manager wired up on Linux. On a dnf/pacman box
+# the system route is simply unavailable and everything falls through to the
 # userland routes, which are OS-independent -- which is also exactly what
 # happens on an HPC login node, the case that actually matters here.
+#
+# --- macOS -----------------------------------------------------------------
+# The second platform, and it differs in more than a package manager:
+#
+#   * /bin/bash is 3.2, so nothing in this file (or lib/derive.sh, or
+#     install.sh) may use bash 4 syntax -- no `declare -A`, no ${var^^}, no
+#     named file descriptors. That is why the catalogue below is a flat table
+#     rather than three associative arrays;
+#   * there is no apt, so Homebrew IS the system route rather than a last
+#     resort, and `brew` is the only way to get git or Tailscale;
+#   * Homebrew lives at /opt/homebrew (Apple silicon) or /usr/local (Intel),
+#     never at the ~/.linuxbrew this file used to be the only spelling of;
+#   * release assets are named darwin/macos rather than linux, and pair with a
+#     different architecture tag depending on the project;
+#   * /usr/bin/git EXISTS on a machine with no developer tools, as a stub that
+#     pops a GUI installer the moment it is run -- see have_git().
+
+# --- which platform ---------------------------------------------------------
+OS_KERNEL="$(uname -s 2>/dev/null || echo unknown)"
+is_mac() { [ "$OS_KERNEL" = Darwin ]; }
+
+# Release assets spell this platform two different ways and both are in use
+# here: oh-my-posh and glow say "darwin", jq and Neovim say "macos".
+os_darwin() { if is_mac; then printf 'darwin'; else printf 'linux'; fi; }
+os_macos()  { if is_mac; then printf 'macos';  else printf 'linux'; fi; }
 
 # --- privilege ------------------------------------------------------------
 # PRIV_MODE is one of:
@@ -90,11 +116,13 @@ priv_resolve() {
 }
 
 priv_summary() {
+  local sys=apt; is_mac && sys=Homebrew
   case "$PRIV_MODE" in
     # Kept under 40 cells: both front-ends show this as a hint, the UI's in a
-    # 41-cell panel and the wizard's on whatever terminal you have.
+    # 41-cell panel and the wizard's on whatever terminal you have. "Homebrew"
+    # is three cells longer than "apt" and still fits.
     root)         echo "root -- system packages available" ;;
-    passwordless) echo "passwordless sudo -- apt available" ;;
+    passwordless) echo "passwordless sudo -- $sys available" ;;
     password)     echo "sudo ok (asks once for a password)" ;;
     *)            echo "no sudo -- installs under \$HOME" ;;
   esac
@@ -148,70 +176,122 @@ run_priv() {
 }
 
 # --- the catalogue --------------------------------------------------------
-# Order IS the install order: a tool may only depend on one listed above it.
-# rust and brew come first because they are providers as well as tools; the
-# herdr plugins come last because they need herdr, and the file viewer wants
-# bat/delta/glow to render with.
-TOOL_IDS=(
-  git rust brew
-  ohmyposh jq zoxide eza fzf fd bat delta glow nvtop
-  neovim lazyvim
-  gdown groundcontrol nvitop
-  tailscale
-  herdr herdr_statusline herdr_file_viewer
+# id|label|group, one row per tool, and the row ORDER is the install order: a
+# tool may only depend on one listed above it. brew and rust come first because
+# they are providers as well as tools; the herdr plugins come last because they
+# need herdr, and the file viewer wants bat/delta/glow to render with.
+#
+# brew is listed ahead of git, which is the one ordering that is not obvious.
+# On macOS git has no route EXCEPT Homebrew (its installer pulls in the Xcode
+# Command Line Tools, git included), so git has to come after it. On Linux the
+# dependency runs the other way -- brew bootstraps by cloning its own repo with
+# git -- but that costs nothing here: the only machine where brew is wanted and
+# git is missing is one with no apt either, and there git is unobtainable
+# whichever order they are tried in.
+#
+# One flat table rather than the three `declare -A` arrays this used to be:
+# associative arrays are bash 4, and on macOS this file is read by bash 3.2 --
+# which does not merely lack them, it parses `[git]=...` as an arithmetic
+# subscript and dies on `set -u` with "git: unbound variable" before the script
+# has done anything at all.
+TOOL_META=(
+  "brew|Homebrew (if needed)|providers"
+  "git|git|providers"
+  "rust|Rust toolchain (cargo)|providers"
+  "ohmyposh|oh-my-posh|shell"
+  "jq|jq (JSON)|shell"
+  "zoxide|zoxide (smarter cd)|shell"
+  "eza|eza (ls)|shell"
+  "fzf|fzf (fuzzy finder)|shell"
+  "fd|fd (find)|shell"
+  "bat|bat (cat)|shell"
+  "delta|delta (git pager)|shell"
+  "glow|glow (markdown)|shell"
+  "nvtop|nvtop (GPU monitor)|gpu"
+  "neovim|Neovim|editor"
+  "lazyvim|LazyVim starter|editor"
+  "gdown|gdown|python"
+  "groundcontrol|ground-control-tui|python"
+  "nvitop|nvitop|gpu"
+  "tailscale|Tailscale (needs 'up')|net"
+  "herdr|herdr|herdr"
+  "herdr_statusline|herdr-statusline plugin|herdr"
+  "herdr_file_viewer|herdr-file-viewer plugin|herdr"
 )
 
-declare -A TOOL_LABEL=(
-  [git]="git"                       [rust]="Rust toolchain (cargo)"
-  [brew]="Homebrew (if needed)"
-  [ohmyposh]="oh-my-posh"           [jq]="jq (JSON)"
-  [tailscale]="Tailscale (needs 'up')"
-  [zoxide]="zoxide (smarter cd)"
-  [eza]="eza (ls)"                  [fzf]="fzf (fuzzy finder)"
-  [fd]="fd (find)"                  [bat]="bat (cat)"
-  [delta]="delta (git pager)"       [glow]="glow (markdown)"
-  [nvtop]="nvtop (GPU monitor)"     [neovim]="Neovim"
-  [lazyvim]="LazyVim starter"       [gdown]="gdown"
-  [groundcontrol]="ground-control-tui" [nvitop]="nvitop"
-  [herdr]="herdr"                   [herdr_statusline]="herdr-statusline plugin"
-  [herdr_file_viewer]="herdr-file-viewer plugin"
-)
+# The ids alone, in the same order -- walked far more often than the metadata is
+# looked up, and derived here so a new tool means adding exactly one row above.
+TOOL_IDS=()
+for _row in "${TOOL_META[@]}"; do TOOL_IDS+=("${_row%%|*}"); done
+unset _row
 
-declare -A TOOL_GROUP=(
-  [git]=providers [rust]=providers [brew]=providers
-  [tailscale]=net
-  [ohmyposh]=shell [jq]=shell [zoxide]=shell [eza]=shell [fzf]=shell
-  [fd]=shell [bat]=shell [delta]=shell [glow]=shell
-  [nvtop]=gpu [nvitop]=gpu
-  [neovim]=editor [lazyvim]=editor
-  [gdown]=python [groundcontrol]=python
-  [herdr]=herdr [herdr_statusline]=herdr [herdr_file_viewer]=herdr
-)
+_tool_meta() {
+  local row rest
+  for row in "${TOOL_META[@]}"; do
+    [ "${row%%|*}" = "$1" ] || continue
+    rest="${row#*|}"
+    case "$2" in
+      label) printf '%s' "${rest%%|*}" ;;
+      group) printf '%s' "${rest#*|}" ;;
+    esac
+    return 0
+  done
+  printf '%s' "$1"
+}
+tool_label() { _tool_meta "$1" label; }
+tool_group() { _tool_meta "$1" group; }
 
 # Only the hard ones: a dependency here means "cannot be installed before".
-# bat/delta/glow are not listed under herdr_file_viewer because the plugin
-# installs and runs fine without them -- it just falls back to plain text.
-declare -A TOOL_DEPS=(
-  [lazyvim]="neovim git"
-  [herdr_statusline]="herdr"
-  [herdr_file_viewer]="herdr"
-)
+# bat/delta/glow are deliberately not listed under herdr_file_viewer because the
+# plugin installs and runs fine without them -- it just falls back to plain text.
+tool_deps() {
+  case "$1" in
+    lazyvim) echo "neovim git" ;;
+    herdr_statusline|herdr_file_viewer) echo "herdr" ;;
+  esac
+}
 
 # --- is it already here? --------------------------------------------------
 LAZYVIM_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/nvim"
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
-# Homebrew's two Linux prefixes. Checked as a path rather than with `have brew`
-# because a machine very often HAS brew and has simply never put it on PATH --
-# nothing does that until a shell sources its shellenv, which on this setup is
-# bashrc_additions.sh, i.e. later than any of this. Missing that would make us
-# clone a second copy over the top of a perfectly good one.
+# `have git` is not good enough on macOS. /usr/bin/git is a SHIM that exists on
+# every Mac, developer tools or not: run it without them and it prints
+# "xcode-select: note: No developer tools were found", pops a GUI installer
+# dialog, and fails. So it passes `command -v` and then breaks every clone.
+# `xcode-select -p` answers "are the tools actually installed" without
+# triggering that dialog. A git from anywhere else (Homebrew, /usr/local) is
+# taken at face value, since only the shim needs the question asked.
+have_git() {
+  have git || return 1
+  is_mac || return 0
+  case "$(command -v git)" in
+    /usr/bin/git) xcode-select -p >/dev/null 2>&1 ;;
+    *) return 0 ;;
+  esac
+}
+
+# Where Homebrew lives, per platform. Checked as a path rather than with
+# `have brew` because a machine very often HAS brew and has simply never put it
+# on PATH -- nothing does that until a shell sources its shellenv, which on this
+# setup is bashrc_additions.sh, i.e. later than any of this. Missing that would
+# make us install a second copy over the top of a perfectly good one.
+# Most-official first. On macOS that is Apple silicon's /opt/homebrew, then
+# Intel's /usr/local, then the unprivileged clone install_brew() falls back to;
+# on Linux, the two linuxbrew spellings. The lists are spelled out in the loops
+# rather than returned from a helper, so $HOME stays quoted the whole way.
 brew_prefix() {
   local dir
-  for dir in "$HOME/.linuxbrew" "/home/linuxbrew/.linuxbrew"; do
-    if [ -x "$dir/bin/brew" ]; then printf '%s' "$dir"; return 0; fi
-  done
+  if is_mac; then
+    for dir in /opt/homebrew /usr/local "$HOME/homebrew"; do
+      if [ -x "$dir/bin/brew" ]; then printf '%s' "$dir"; return 0; fi
+    done
+  else
+    for dir in "$HOME/.linuxbrew" /home/linuxbrew/.linuxbrew; do
+      if [ -x "$dir/bin/brew" ]; then printf '%s' "$dir"; return 0; fi
+    done
+  fi
   return 1
 }
 
@@ -230,7 +310,7 @@ herdr_has_plugin() {
 
 tool_present() {
   case "$1" in
-    git)           have git ;;
+    git)           have_git ;;
     tailscale)     have tailscale ;;
     rust)          have cargo ;;
     brew)          have brew || brew_prefix >/dev/null 2>&1 ;;
@@ -258,10 +338,15 @@ tool_present() {
   esac
 }
 
+# The answer variable for a tool id. ${1^^} would be the obvious spelling and is
+# bash 4; the ids are plain ASCII so tr is exact, at the cost of a fork on a
+# list of twenty-odd. Both front-ends and theme.env agree on this name.
+tool_var() { printf 'TOOL_%s' "$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')"; }
+
 # TOOL_<ID>, defaulting to on. This is the "all on by default, deselect what you
 # don't want" rule, in one place.
 tool_selected() {
-  local var="TOOL_${1^^}"
+  local var; var="$(tool_var "$1")"
   [ "${!var:-1}" = 1 ]
 }
 
@@ -272,7 +357,7 @@ tool_selected() {
 tools_defaults() {
   local id var
   for id in "${TOOL_IDS[@]}"; do
-    var="TOOL_${id^^}"
+    var="$(tool_var "$id")"
     [ -n "${!var:-}" ] || printf -v "$var" '%s' 1
   done
 }
@@ -281,7 +366,7 @@ tools_defaults() {
 tools_answers() {
   local id var
   for id in "${TOOL_IDS[@]}"; do
-    var="TOOL_${id^^}"
+    var="$(tool_var "$id")"
     printf '%s=%s\n' "$var" "${!var:-1}"
   done
 }
@@ -289,24 +374,41 @@ tools_answers() {
 # Export them all, for handing the current answers to tui/configure.py.
 tools_export() {
   local id
-  for id in "${TOOL_IDS[@]}"; do export "TOOL_${id^^}"; done
+  for id in "${TOOL_IDS[@]}"; do export "$(tool_var "$id")"; done
 }
 
 # --- providers ------------------------------------------------------------
 # Availability during a plan walk or an install run. These start from what is
 # on the machine now and are flipped on as the walk passes a provider it is
 # going to install, so a tool listed after rust can count on cargo.
-AVAIL_APT=0 AVAIL_CARGO=0 AVAIL_UV=0 AVAIL_BREW=0
+AVAIL_APT=0 AVAIL_CARGO=0 AVAIL_UV=0 AVAIL_BREW=0 AVAIL_GIT=0
 
 providers_init() {
   AVAIL_APT=0; priv_available && have apt-get && AVAIL_APT=1
   AVAIL_CARGO=0; have cargo && AVAIL_CARGO=1
   AVAIL_UV=0;    have uv    && AVAIL_UV=1
+  # git is a provider as much as a tool -- fzf, LazyVim and Homebrew's own
+  # bootstrap all clone with it -- so it gets the same treatment as cargo: what
+  # is here now, flipped on as the walk passes it. Without that, a Mac with no
+  # developer tools reports fzf and LazyVim as blocked in the plan and then
+  # installs both, because git arrived in between.
+  AVAIL_GIT=0;   have_git  && AVAIL_GIT=1
   # Detected by path, not by PATH -- see brew_prefix(). install_tools() calls
   # brew_activate() to make an adopted one actually usable; the plan only needs
   # to know it is there, and must stay free of side effects.
   AVAIL_BREW=0
   if have brew || brew_prefix >/dev/null 2>&1; then AVAIL_BREW=1; fi
+}
+
+# "the walk has just got past a provider": everything after it may count on it.
+# One place rather than three identical case statements, since forgetting one is
+# how a plan starts disagreeing with the run it is supposed to be describing.
+providers_seen() {
+  case "$1" in
+    rust) AVAIL_CARGO=1 ;;
+    brew) AVAIL_BREW=1 ;;
+    git)  AVAIL_GIT=1 ;;
+  esac
 }
 
 # cargo either is here, or rust is selected and about to put it here.
@@ -316,7 +418,7 @@ cargo_coming() {
 }
 
 # Homebrew is bootstrapped only when it is the *sole* remaining route to
-# something that was actually asked for -- a ~1GB clone is not something to do
+# something that was actually asked for -- a ~1GB install is not something to do
 # on spec. glow and neovim never count towards that: their release tarballs
 # work on every machine, privileged or not.
 brew_needed() {
@@ -324,8 +426,19 @@ brew_needed() {
   [ "$AVAIL_BREW" = 1 ] && return 1
   [ "$AVAIL_APT" = 1 ] && return 1     # apt covers everything brew would
   local id
-  # nvtop is the sharp case: no cargo crate, no useful release tarball.
-  if tool_selected nvtop && ! tool_present nvtop; then return 0; fi
+  if is_mac; then
+    # There is no apt to fall back to here, so brew is the system route and
+    # these two have no other one at all: git ships with the Xcode Command Line
+    # Tools (which Homebrew's own installer pulls in) and Tailscale publishes no
+    # darwin tarball.
+    for id in git tailscale; do
+      if tool_selected "$id" && ! tool_present "$id"; then return 0; fi
+    done
+  else
+    # nvtop is the sharp case on Linux: no cargo crate, no useful release
+    # tarball. On macOS it is not a case at all -- see tool_route.
+    if tool_selected nvtop && ! tool_present nvtop; then return 0; fi
+  fi
   if ! cargo_coming; then
     for id in eza fd bat delta; do
       if tool_selected "$id" && ! tool_present "$id"; then return 0; fi
@@ -336,48 +449,71 @@ brew_needed() {
 
 # --- route resolution -----------------------------------------------------
 # One decision point, used by both --plan and install_tools(). Prints
-# "method|detail"; an empty method means there is no route on this machine.
+# "method|detail". An empty method means there is no route on this machine; the
+# method "na" means there is nothing to do here and never was (nvtop on a Mac,
+# Homebrew on a machine that needs nothing from it), which both callers report
+# as a skip rather than as a machine that fell short.
 tool_route() {
   case "$1" in
-    # Deliberately `have brew` rather than brew_needed(): Homebrew bootstraps
-    # itself by cloning its own repo WITH git, so letting git route through a
-    # brew that is not installed yet would be circular. An existing brew is
-    # fine.
+    # AVAIL_BREW rather than brew_needed(): the flag is already "brew is here,
+    # or the walk has just installed it", and brew is ordered ahead of git
+    # precisely so that answer is settled by the time this is asked. Calling
+    # brew_needed() from here would be the circular version, since on Linux
+    # Homebrew bootstraps itself by cloning its own repo WITH git.
     git)      if [ "$AVAIL_APT" = 1 ]; then echo "apt|git"
-              elif have brew; then echo "brew|git"
+              elif [ "$AVAIL_BREW" = 1 ]; then echo "brew|git"
+              elif is_mac; then echo "|needs Homebrew, or: xcode-select --install"
               else echo "|needs apt or an existing Homebrew"; fi ;;
-    # With privilege the official script is right: it picks the distro package
-    # and sets up the systemd unit, which is what makes a real node. Without, the
-    # static tarball still gives a working CLI and daemon, but the daemon has to
-    # be started by hand in userspace-networking mode -- print_next_steps() spells
-    # that out rather than leaving it to be discovered.
-    tailscale) if priv_available; then echo "script|tailscale.com/install.sh + systemd"
+    # On Linux with privilege the official script is right: it picks the distro
+    # package and sets up the systemd unit, which is what makes a real node.
+    # Without, the static tarball still gives a working CLI and daemon, but the
+    # daemon has to be started by hand in userspace-networking mode.
+    # There is no darwin tarball and the install script refuses to run on macOS,
+    # so there the brew formula is the whole story (the App Store build is a GUI
+    # app with a sandboxed CLI). print_next_steps() spells out what is left in
+    # each of the three cases rather than leaving it to be discovered.
+    tailscale) if is_mac; then
+                 if [ "$AVAIL_BREW" = 1 ]; then echo "brew|tailscale (then: brew services start)"
+                 else echo "|needs Homebrew (or the App Store app)"; fi
+               elif priv_available; then echo "script|tailscale.com/install.sh + systemd"
                else echo "tarball|static binaries -> ~/.local/bin (userspace)"; fi ;;
     rust)     echo "script|rustup.rs -> ~/.cargo" ;;
-    brew)     if brew_needed; then echo "git|~/.linuxbrew (sole route to something selected)"
-              else echo "|not needed on this machine"; fi ;;
+    # have_git, not AVAIL_GIT: brew is the FIRST entry in the catalogue, so
+    # nothing has had a chance to install git yet and the live answer is the
+    # only true one. On macOS that is also why the admin route matters so much
+    # -- the official installer brings the Xcode CLT (and therefore git) with
+    # it, where the clone needs a git that a bare Mac does not have.
+    brew)     if ! brew_needed; then echo "na|not needed on this machine"
+              elif is_mac && priv_available; then echo "script|brew.sh installer (+ Xcode CLT)"
+              elif ! have_git && is_mac; then echo "|needs admin, or a git to clone with"
+              elif ! have_git; then echo "|needs git to clone Homebrew with"
+              elif is_mac; then echo "git|~/homebrew (no admin: builds from source)"
+              else echo "git|~/.linuxbrew (sole route to something selected)"; fi ;;
     ohmyposh) echo "binary|oh-my-posh release -> ~/.local/bin" ;;
     jq)       if [ "$AVAIL_APT" = 1 ]; then echo "apt|jq"
               else echo "binary|jqlang/jq -> ~/.local/bin"; fi ;;
     herdr)    echo "script|herdr.dev -> ~/.local/bin" ;;
     zoxide)   if [ "$AVAIL_APT" = 1 ]; then echo "apt|zoxide"
               else echo "script|zoxide install.sh -> ~/.local/bin"; fi ;;
-    fzf)      if have git; then echo "git|~/.fzf (--no-update-rc)"
+    fzf)      if [ "$AVAIL_GIT" = 1 ]; then echo "git|~/.fzf (--no-update-rc)"
               elif [ "$AVAIL_APT" = 1 ]; then echo "apt|fzf"
               else echo "|needs git or apt"; fi ;;
-    eza)      _route_cargo_or_apt eza eza ;;
-    fd)       _route_cargo_or_apt fd-find fd-find ;;
-    bat)      _route_cargo_or_apt bat bat ;;
-    delta)    _route_cargo_or_apt git-delta git-delta ;;
+    eza)      _route_system_or_cargo eza eza ;;
+    fd)       _route_system_or_cargo fd-find fd-find ;;
+    bat)      _route_system_or_cargo bat bat ;;
+    delta)    _route_system_or_cargo git-delta git-delta ;;
     glow)     echo "tarball|charmbracelet/glow -> ~/.local/bin" ;;
-    nvtop)    if [ "$AVAIL_APT" = 1 ]; then echo "apt|nvtop"
+    # No NVIDIA GPU has ever been attached to a Mac that runs this, there is no
+    # nvtop formula for darwin, and nvidia-smi is what the tool wraps.
+    nvtop)    if is_mac; then echo "na|no NVIDIA GPUs on macOS"
+              elif [ "$AVAIL_APT" = 1 ]; then echo "apt|nvtop"
               elif [ "$AVAIL_BREW" = 1 ] || brew_needed; then echo "brew|nvtop"
               else echo "|needs apt or Homebrew"; fi ;;
     # apt's neovim is 0.9.5 on 24.04, which LazyVim will start on and then warn
     # about forever. The official tarball is current, needs no privilege, and
     # lands where bashrc_additions.sh already puts ~/.local/nvim/bin on PATH.
     neovim)   echo "tarball|neovim stable -> ~/.local/nvim" ;;
-    lazyvim)  if have git; then echo "git|LazyVim/starter -> $LAZYVIM_DIR"
+    lazyvim)  if [ "$AVAIL_GIT" = 1 ]; then echo "git|LazyVim/starter -> $LAZYVIM_DIR"
               else echo "|needs git"; fi ;;
     gdown|groundcontrol|nvitop)
               if [ "$AVAIL_UV" = 1 ]; then echo "uv|uv tool install $(_pypi_name "$1")"
@@ -388,12 +524,22 @@ tool_route() {
   esac
 }
 
-# apt when we may use it, else cargo (which rust puts there), else brew.
-_route_cargo_or_apt() {
-  local apt_pkg="$1" crate="$2"
+# The system package manager when we may use it, else cargo (which rust puts
+# there), else Homebrew. On macOS the first and last of those are the same
+# thing, so brew simply moves to the front: a bottle is seconds where the same
+# crate is minutes of compiling.
+_route_system_or_cargo() {
+  local apt_pkg="$1" crate="$2" formula="${1%-find}"
+  if is_mac; then
+    if [ "$AVAIL_BREW" = 1 ]; then echo "brew|$formula"
+    elif [ "$AVAIL_CARGO" = 1 ]; then echo "cargo|$crate"
+    elif brew_needed; then echo "brew|$formula"
+    else echo "|needs cargo or Homebrew"; fi
+    return
+  fi
   if [ "$AVAIL_APT" = 1 ]; then echo "apt|$apt_pkg"
   elif [ "$AVAIL_CARGO" = 1 ]; then echo "cargo|$crate"
-  elif [ "$AVAIL_BREW" = 1 ] || brew_needed; then echo "brew|${apt_pkg%-find}"
+  elif [ "$AVAIL_BREW" = 1 ] || brew_needed; then echo "brew|$formula"
   else echo "|needs apt, cargo or Homebrew"; fi
 }
 
@@ -477,8 +623,12 @@ fetch_bin_from_tarball() {
   # Several names, one download: Tailscale ships the CLI and the daemon in the
   # same archive and the CLI is useless without the daemon. Succeeds if any one
   # of them was found.
+  #
+  # `| head -1` rather than find's own -print -quit, which is not in every BSD
+  # find; the `|| true` is because head closing the pipe early can hand find a
+  # SIGPIPE, and this file is sourced into a `set -o pipefail` script.
   for name in "$@"; do
-    found="$(find "$tmp" -type f -name "$name" -perm -u+x -print -quit)"
+    found="$(find "$tmp" -type f -name "$name" -perm -u+x 2>/dev/null | head -n 1 || true)"
     [ -n "$found" ] || continue
     install -m 0755 "$found" "$HOME/.local/bin/$name"
     got=1
@@ -524,6 +674,14 @@ install_git() {
 }
 
 install_tailscale() {
+  # macOS: no static tarball is published and the install script bails out
+  # there, so the brew formula (tailscaled + CLI, started with `brew services`)
+  # is the only route. tool_route has already established brew is usable.
+  if is_mac; then
+    brew_install tailscale || return 1
+    have tailscale
+    return
+  fi
   if priv_available; then
     sudo_unlock || return 1
     # The installer calls sudo itself; the unlock above has already primed the
@@ -560,11 +718,26 @@ install_rust() {
 
 install_brew() {
   local prefix
-  # Adopt an existing prefix rather than cloning a second one next to it.
-  if ! prefix="$(brew_prefix)"; then
-    prefix="$HOME/.linuxbrew"
-    have git || return 1
-    # The "clone anywhere" install, which is the only one that needs no root.
+  # Adopt an existing prefix rather than installing a second one next to it.
+  if prefix="$(brew_prefix)"; then
+    :
+  elif is_mac && priv_available; then
+    # The official installer is the only route to a *bottled* Homebrew: a prefix
+    # anywhere other than /opt/homebrew (or /usr/local on Intel) makes brew
+    # build every formula from source. It needs admin to create that directory,
+    # and it installs the Xcode Command Line Tools on the way -- which is what
+    # makes it git's route on this platform too. NONINTERACTIVE=1 stops it
+    # waiting on a RETURN nobody is there to press.
+    sudo_unlock || return 1
+    NONINTERACTIVE=1 /bin/bash -c \
+      "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" \
+      >/dev/null 2>&1 || return 1
+    prefix="$(brew_prefix)" || return 1
+  else
+    # The "clone anywhere" install, which is the only one that needs no root --
+    # and on macOS the one that means source builds, hence its place last.
+    prefix="$HOME/.linuxbrew"; is_mac && prefix="$HOME/homebrew"
+    have_git || return 1
     git clone --depth 1 https://github.com/Homebrew/brew "$prefix" >/dev/null 2>&1 || return 1
   fi
   eval "$("$prefix/bin/brew" shellenv)" || return 1
@@ -581,7 +754,7 @@ install_ohmyposh() {
   # own template. The script stays as a fallback for an architecture with no
   # published binary.
   if fetch_bin \
-      "https://github.com/JanDeDobbeleer/oh-my-posh/releases/latest/download/posh-linux-$(arch_deb)" \
+      "https://github.com/JanDeDobbeleer/oh-my-posh/releases/latest/download/posh-$(os_darwin)-$(arch_deb)" \
       oh-my-posh; then
     return 0
   fi
@@ -606,7 +779,7 @@ install_jq() {
   fi
   # /releases/latest/download/ is a permanent redirect to the newest tag, so
   # this needs no API call and cannot be rate limited.
-  fetch_bin "https://github.com/jqlang/jq/releases/latest/download/jq-linux-$(arch_deb)" jq
+  fetch_bin "https://github.com/jqlang/jq/releases/latest/download/jq-$(os_macos)-$(arch_deb)" jq
 }
 
 install_zoxide() {
@@ -652,8 +825,9 @@ install_bat()   { _install_via_route bat; }
 install_delta() { _install_via_route delta; }
 
 install_glow() {
-  local url
-  url="$(github_latest_asset charmbracelet/glow "[Ll]inux.*$(arch_tag).*\.tar\.gz")"
+  local url os="[Ll]inux"
+  is_mac && os="[Dd]arwin"
+  url="$(github_latest_asset charmbracelet/glow "$os.*$(arch_tag).*\.tar\.gz")"
   [ -n "$url" ] || return 1
   fetch_bin_from_tarball "$url" glow
 }
@@ -669,9 +843,12 @@ install_nvtop() {
 
 install_neovim() {
   local arch url tmp dest="$HOME/.local/nvim"
-  case "$(uname -m)" in
-    x86_64|amd64)  arch="linux-x86_64" ;;
-    aarch64|arm64) arch="linux-arm64" ;;
+  # Neovim's asset names pair "macos" with the x86_64/arm64 arch spelling.
+  case "$OS_KERNEL/$(uname -m)" in
+    Darwin/arm64)         arch="macos-arm64" ;;
+    Darwin/x86_64)        arch="macos-x86_64" ;;
+    */x86_64|*/amd64)     arch="linux-x86_64" ;;
+    */aarch64|*/arm64)    arch="linux-arm64" ;;
     *) return 1 ;;
   esac
   url="https://github.com/neovim/neovim/releases/download/stable/nvim-$arch.tar.gz"
@@ -686,6 +863,11 @@ install_neovim() {
     rm -rf "$tmp"; return 1
   fi
   rm -rf "$tmp"
+  # macOS: Neovim's own instructions say to clear the quarantine attribute
+  # before running these. curl does not set one (only browsers do), so this is
+  # belt and braces -- but a Gatekeeper refusal at first launch is an obscure
+  # enough failure to be worth two harmless lines.
+  is_mac && xattr -cr "$dest" >/dev/null 2>&1
   PATH="$dest/bin:$PATH"; export PATH
   note_path "$dest/bin"
   have nvim
@@ -775,32 +957,29 @@ tools_plan() {
     fi
     if tool_present "$id"; then
       printf '%s|present|-|already installed\n' "$id"
-      case "$id" in
-        rust) AVAIL_CARGO=1 ;; brew) AVAIL_BREW=1 ;;
-      esac
+      providers_seen "$id"
       continue
     fi
     # A dependency that is neither present nor going to be installed blocks it.
     missing=""
-    for dep in ${TOOL_DEPS[$id]:-}; do
+    for dep in $(tool_deps "$id"); do
       if ! tool_present "$dep" && ! tool_selected "$dep"; then missing="$dep"; break; fi
     done
     if [ -n "$missing" ]; then
       printf '%s|blocked|-|needs %s\n' "$id" "$missing"; continue
     fi
     route="$(tool_route "$id")"; method="${route%%|*}"; detail="${route#*|}"
-    # Before the no-route check below: brew having no route is the normal,
-    # intended outcome ("nothing here needs it"), not a machine that fell short.
-    if [ "$id" = brew ] && ! brew_needed; then
+    # Before the no-route check below: "na" is the normal, intended outcome for
+    # a tool this machine has no business installing (Homebrew when nothing
+    # needs it, nvtop on a Mac) rather than a machine that fell short.
+    if [ "$method" = na ]; then
       printf '%s|skip|-|%s\n' "$id" "$detail"; continue
     fi
     if [ -z "$method" ]; then
       printf '%s|blocked|-|%s\n' "$id" "$detail"; continue
     fi
     printf '%s|install|%s|%s\n' "$id" "$method" "$detail"
-    case "$id" in
-      rust) AVAIL_CARGO=1 ;; brew) AVAIL_BREW=1 ;;
-    esac
+    providers_seen "$id"
   done
 }
 
@@ -830,22 +1009,22 @@ install_tools() {
     fi
     if tool_present "$id"; then
       printf '  %-22s already installed\n' "$id"
-      case "$id" in rust) AVAIL_CARGO=1 ;; brew) AVAIL_BREW=1 ;; esac
+      providers_seen "$id"
       continue
     fi
     blocked=""
-    for dep in ${TOOL_DEPS[$id]:-}; do
+    for dep in $(tool_deps "$id"); do
       tool_present "$dep" || { blocked="$dep"; break; }
     done
     if [ -n "$blocked" ]; then
       printf '  %-22s SKIPPED (%s is not installed)\n' "$id" "$blocked"
       TOOLS_SKIPPED+=("$id"); continue
     fi
-    if [ "$id" = brew ] && ! brew_needed; then
-      printf '  %-22s not needed on this machine\n' "$id"
+    route="$(tool_route "$id")"; method="${route%%|*}"; detail="${route#*|}"
+    if [ "$method" = na ]; then
+      printf '  %-22s %s\n' "$id" "$detail"
       TOOLS_SKIPPED+=("$id"); continue
     fi
-    route="$(tool_route "$id")"; method="${route%%|*}"; detail="${route#*|}"
     if [ -z "$method" ]; then
       printf '  %-22s SKIPPED (%s)\n' "$id" "$detail"
       TOOLS_SKIPPED+=("$id"); continue
@@ -859,7 +1038,7 @@ install_tools() {
     if [ "$rc" -eq 0 ]; then
       echo "ok"
       TOOLS_INSTALLED+=("$id")
-      case "$id" in rust) AVAIL_CARGO=1 ;; brew) AVAIL_BREW=1 ;; esac
+      providers_seen "$id"
     elif [ "$rc" -eq 2 ]; then
       echo "left alone"
       TOOLS_SKIPPED+=("$id")
@@ -926,7 +1105,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     --list)
       # id|label|group|selected -- the checkbox list, in catalogue order.
       for id in "${TOOL_IDS[@]}"; do
-        printf '%s|%s|%s|%s\n' "$id" "${TOOL_LABEL[$id]}" "${TOOL_GROUP[$id]}" \
+        printf '%s|%s|%s|%s\n' "$id" "$(tool_label "$id")" "$(tool_group "$id")" \
           "$(tool_selected "$id" && echo 1 || echo 0)"
       done
       ;;

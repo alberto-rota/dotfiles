@@ -40,6 +40,34 @@ as `<file>.bak`).
 bash lib/tools.sh --plan     # what a tools run would do here, without doing it
 ```
 
+### Linux and macOS
+
+Both work, from the same one-liner. What differs on a Mac:
+
+- **Homebrew is the system package manager**, where apt is on Linux — so it is
+  installed when something selected needs it, rather than only as a last
+  resort. With admin that is the official installer, which also brings in the
+  Xcode Command Line Tools (and therefore **git**, which has no other route
+  there). Without admin it is a clone under `~/homebrew`, which works but
+  builds formulae from source, so `--plan` says so before you commit to it.
+- **Tailscale** comes from the brew formula and needs
+  `sudo brew services start tailscale` afterwards — there is no darwin tarball
+  and the official install script does not run on macOS. The final
+  copy-and-paste block tells you.
+- **nvtop is skipped**, as "not applicable" rather than "failed".
+- **`~/.bash_profile`**, if you already have one, gets a line sourcing
+  `~/.bashrc`. bash reads only the *first* of `~/.bash_profile`,
+  `~/.bash_login`, `~/.profile`, and Terminal.app opens a login shell for
+  every window — so without that the install is in place and nothing loads it.
+  A `~/.bash_profile` is never *created*: that would shadow the `~/.profile`
+  this repo links.
+- **The machine name defaults are cleaned up rather than rejected**, since
+  macOS hostnames come with apostrophes, spaces and more than 24 characters.
+
+Everything here runs under **bash 3.2**, which is what `/bin/bash` is on macOS
+— so `curl … | bash` needs nothing installed first. Zsh is not supported: the
+shell config is bash, and on macOS that means starting one.
+
 ### The setup UI
 
 `tui/configure.py` is a [Textual](https://textual.textualize.io) app with
@@ -188,11 +216,12 @@ is harmless if it fails.
 
 **Sudo is detected, not assumed.** install.sh works out whether you are root,
 have passwordless sudo, are a sudoer who has to type a password, or have no
-sudo at all — and picks routes accordingly. With privilege it uses apt;
-without, everything lands in `$HOME` via rustup/cargo, `uv tool install`,
-release tarballs, git clones or Homebrew. There is no separate unprivileged
-installer, just a route list whose first entry drops out. On an HPC login
-node that means it all still works, unattended.
+sudo at all — and picks routes accordingly. With privilege it uses the system
+package manager (apt on Linux, Homebrew on macOS); without, everything lands
+in `$HOME` via rustup/cargo, `uv tool install`, release tarballs or git
+clones. There is no separate unprivileged installer, just a route list whose
+first entry drops out. On an HPC login node that means it all still works,
+unattended.
 
 If a password is needed you are asked **once**, up front, before anything
 runs — not repeatedly in the middle of the install. Say no and it falls back
@@ -203,10 +232,11 @@ A few deliberate choices: Neovim comes from the official tarball rather than
 apt, because apt's 0.9.5 is old enough that LazyVim complains about it;
 LazyVim refuses to touch a `~/.config/nvim` that already has files in it;
 Homebrew is only bootstrapped when it is the *sole* route to something you
-actually selected (in practice `nvtop` on a box with no apt); and on Debian
-and Ubuntu, where the packages are called `batcat` and `fdfind`,
-`bashrc_additions.sh` aliases them back to `bat` and `fd` — but only when the
-real binaries aren't there, so a cargo or brew install isn't shadowed.
+actually selected (on Linux, in practice `nvtop` on a box with no apt; on
+macOS, git or Tailscale); and on Debian and Ubuntu, where the packages are
+called `batcat` and `fdfind`, `bashrc_additions.sh` aliases them back to
+`bat` and `fd` — but only when the real binaries aren't there, so a cargo or
+brew install isn't shadowed.
 
 Nothing in the phase is fatal. A tool that fails is reported and the run
 carries on; re-run `./install.sh` to retry it. Anything with no route on this
