@@ -197,6 +197,7 @@ run_priv() {
 TOOL_META=(
   "brew|Homebrew (if needed)|providers"
   "git|git|providers"
+  "buildtools|C toolchain (if needed)|providers"
   "rust|Rust toolchain (cargo)|providers"
   "ohmyposh|oh-my-posh|shell"
   "jq|jq (JSON)|shell"
@@ -255,7 +256,11 @@ tool_group() { _tool_meta "$1" group; }
 tool_deps() {
   case "$1" in
     lazyvim) echo "neovim git" ;;
-    herdr_statusline) echo "herdr rust" ;;
+    # buildtools as well as rust, and for the same reason: cargo is half a
+    # cargo build. tool_present buildtools is have_cc, so a machine that already
+    # links satisfies it without installing anything, and one that does not gets
+    # "SKIPPED (buildtools is not installed)" instead of a swallowed rustc error.
+    herdr_statusline) echo "herdr rust buildtools" ;;
     herdr_file_viewer) echo "herdr" ;;
   esac
 }
@@ -279,6 +284,53 @@ have_git() {
     /usr/bin/git) xcode-select -p >/dev/null 2>&1 ;;
     *) return 0 ;;
   esac
+}
+
+# The C linker every cargo build needs, and the reason `have cargo` was never
+# enough to know one would succeed: rustup ships a compiler for Rust and NOTHING
+# to link its objects with. On a brand-new machine -- a slim container, an HPC
+# login node, a fresh VM -- cargo therefore gets a long way through the crate
+# graph and then dies on `error: linker "cc" not found` for every build script
+# at once. rustc invokes the linker as `cc` by name, so a machine with gcc or
+# clang but no `cc` in front of it fails identically; cc_linker() is what turns
+# that from a dead end into a `-C linker=` flag.
+#
+# /usr/bin/cc on macOS is the same shim /usr/bin/git is, and answers the same
+# way -- so is the whole toolchain there, not just a name on PATH.
+cc_probe() {
+  local c
+  for c in cc gcc clang; do
+    have "$c" || continue
+    if is_mac; then
+      case "$(command -v "$c")" in
+        /usr/bin/*) xcode-select -p >/dev/null 2>&1 || continue ;;
+      esac
+    fi
+    printf '%s' "$c"; return 0
+  done
+  return 1
+}
+have_cc() { cc_probe >/dev/null; }
+
+# Empty when the linker is already spelled `cc` (rustc's default, nothing to
+# say); otherwise the compiler to point rustc at instead.
+cc_linker() {
+  local c; c="$(cc_probe)" || return 1
+  [ "$c" = cc ] && return 0
+  printf '%s' "$c"
+}
+
+# Run a cargo build with whatever linker this machine actually has. RUSTFLAGS is
+# only set when it would say something, and only for the child -- an existing
+# RUSTFLAGS in the environment is somebody's deliberate choice and replacing it
+# silently is worse than not helping.
+cargo_with_linker() {
+  local linker
+  if [ -z "${RUSTFLAGS:-}" ] && linker="$(cc_linker)" && [ -n "$linker" ]; then
+    RUSTFLAGS="-C linker=$linker" "$@"
+  else
+    "$@"
+  fi
 }
 
 # Where Homebrew lives, per platform. Checked as a path rather than with
@@ -322,6 +374,10 @@ tool_present() {
     git)           have_git ;;
     tailscale)     have tailscale ;;
     rust)          have cargo ;;
+    # "is there a linker", not "did we install a package": a machine that came
+    # with gcc, or with clang and no cc, already satisfies this and must not be
+    # sent to apt for build-essential it does not need.
+    buildtools)    have_cc ;;
     brew)          have brew || brew_prefix >/dev/null 2>&1 ;;
     ohmyposh)      have oh-my-posh ;;
     jq)            have jq ;;
@@ -394,12 +450,16 @@ tools_export() {
 # Availability during a plan walk or an install run. These start from what is
 # on the machine now and are flipped on as the walk passes a provider it is
 # going to install, so a tool listed after rust can count on cargo.
-AVAIL_APT=0 AVAIL_CARGO=0 AVAIL_UV=0 AVAIL_BREW=0 AVAIL_GIT=0
+AVAIL_APT=0 AVAIL_CARGO=0 AVAIL_UV=0 AVAIL_BREW=0 AVAIL_GIT=0 AVAIL_CC=0
 
 providers_init() {
   AVAIL_APT=0; priv_available && have apt-get && AVAIL_APT=1
   AVAIL_CARGO=0; have cargo && AVAIL_CARGO=1
   AVAIL_UV=0;    have uv    && AVAIL_UV=1
+  # A linker is a provider in its own right, separate from cargo: rustup brings
+  # cargo and no `cc`, so the two are genuinely independent facts about a
+  # machine and every cargo route has to check both. See have_cc().
+  AVAIL_CC=0;    have_cc   && AVAIL_CC=1
   # git is a provider as much as a tool -- fzf, LazyVim and Homebrew's own
   # bootstrap all clone with it -- so it gets the same treatment as cargo: what
   # is here now, flipped on as the walk passes it. Without that, a Mac with no
@@ -421,6 +481,7 @@ providers_seen() {
     rust) AVAIL_CARGO=1 ;;
     brew) AVAIL_BREW=1 ;;
     git)  AVAIL_GIT=1 ;;
+    buildtools) AVAIL_CC=1 ;;
   esac
 }
 
@@ -428,6 +489,41 @@ providers_seen() {
 cargo_coming() {
   [ "$AVAIL_CARGO" = 1 ] && return 0
   tool_selected rust
+}
+
+# A cargo route is only real when BOTH halves are: a cargo to run and a linker
+# for it to finish with. Everything that used to test AVAIL_CARGO alone now asks
+# this instead, which is the whole bug -- `have cargo` on a machine with no
+# compiler resolved to a route that could not possibly work, and reported it as
+# a plan the run would follow.
+cargo_usable() {
+  [ "$AVAIL_CARGO" = 1 ] && [ "$AVAIL_CC" = 1 ]
+}
+
+# Whether a compiler is worth installing here: only when something selected has
+# no route EXCEPT a cargo build. Deliberately shaped like brew_needed() and
+# deliberately NOT asking tool_route() -- the cargo routes consult AVAIL_CC, so
+# asking them what they would do would be circular. Kept explicit instead.
+cc_needed() {
+  tool_selected buildtools || return 1
+  [ "$AVAIL_CC" = 1 ] && return 1
+  cargo_coming || return 1          # nothing will be building with cargo at all
+  local id
+  # herdr-statusline compiles hsl-config; there is no prebuilt route to it.
+  if ! is_mac && tool_selected herdr_statusline && ! tool_present herdr_statusline; then
+    return 0
+  fi
+  # These four only reach cargo when the system package manager cannot serve
+  # them -- with apt (or Homebrew on a Mac) in play they never build anything.
+  if is_mac; then
+    [ "$AVAIL_BREW" = 1 ] && return 1
+  else
+    [ "$AVAIL_APT" = 1 ] && return 1
+  fi
+  for id in eza fd bat delta; do
+    if tool_selected "$id" && ! tool_present "$id"; then return 0; fi
+  done
+  return 1
 }
 
 # Homebrew is bootstrapped only when it is the *sole* remaining route to
@@ -491,6 +587,17 @@ tool_route() {
                elif priv_available; then echo "script|tailscale.com/install.sh + systemd"
                else echo "tarball|static binaries -> ~/.local/bin (userspace)"; fi ;;
     rust)     echo "script|rustup.rs -> ~/.cargo" ;;
+    # Nothing to install when the machine already links, and nothing worth
+    # installing when nothing selected would build -- both are "na", not a
+    # shortfall. Otherwise apt is the only route: there is no userland way to
+    # put a working C toolchain on a Linux box, and a Homebrew gcc is a
+    # multi-hundred-megabyte detour that still leaves rustc looking for `cc`.
+    # Blocked here is honest, and says which tools it costs.
+    buildtools) if [ "$AVAIL_CC" = 1 ]; then echo "na|already present"
+              elif ! cc_needed; then echo "na|not needed on this machine"
+              elif [ "$AVAIL_APT" = 1 ]; then echo "apt|build-essential"
+              elif is_mac; then echo "|needs: xcode-select --install"
+              else echo "|needs apt, or a cc/gcc/clang on PATH"; fi ;;
     # have_git, not AVAIL_GIT: brew is the FIRST entry in the catalogue, so
     # nothing has had a chance to install git yet and the live answer is the
     # only true one. On macOS that is also why the admin route matters so much
@@ -542,7 +649,17 @@ tool_route() {
     # there is nothing to install rather than something that failed -- and it
     # wraps tmux around a herdr session to draw a status line, which is a Linux
     # box's idea of a login shell anyway. na, not an empty method.
+    #
+    # Unlike every other cargo consumer this one has no second route: the plugin
+    # BUILDS hsl-config, there is no release binary, so both halves of
+    # cargo_usable are hard requirements and a machine short of either is
+    # blocked rather than attempted. Saying which half is missing is the point --
+    # the failure this replaces was 30 lines of rustc output ending in
+    # `linker "cc" not found`, printed nowhere because install_tools() sends each
+    # installer's output to /dev/null.
     herdr_statusline)  if is_mac; then echo "na|linux only (plugin manifest)"
+                       elif ! cargo_coming; then echo "|needs rust (builds hsl-config)"
+                       elif [ "$AVAIL_CC" = 0 ]; then echo "|needs a C compiler (cargo build)"
                        else echo "plugin|iiii1224/herdr-statusline"; fi ;;
     herdr_file_viewer) echo "plugin|smarzban/herdr-file-viewer" ;;
     *) echo "|unknown tool" ;;
@@ -553,19 +670,26 @@ tool_route() {
 # there), else Homebrew. On macOS the first and last of those are the same
 # thing, so brew simply moves to the front: a bottle is seconds where the same
 # crate is minutes of compiling.
+#
+# cargo_usable, not AVAIL_CARGO: a cargo with no linker behind it is not a route
+# to anything, and offering it as one meant four tools spending minutes in the
+# compiler on a bare machine before failing at the link step -- when Homebrew
+# below would have worked. The wording says "compiler" rather than "cargo" when
+# cargo is the half that IS here, so the message names what is actually missing.
 _route_system_or_cargo() {
-  local apt_pkg="$1" crate="$2" formula="${1%-find}"
+  local apt_pkg="$1" crate="$2" formula="${1%-find}" lack="cargo"
+  [ "$AVAIL_CARGO" = 1 ] && [ "$AVAIL_CC" = 0 ] && lack="a C compiler"
   if is_mac; then
     if [ "$AVAIL_BREW" = 1 ]; then echo "brew|$formula"
-    elif [ "$AVAIL_CARGO" = 1 ]; then echo "cargo|$crate"
+    elif cargo_usable; then echo "cargo|$crate"
     elif brew_needed; then echo "brew|$formula"
-    else echo "|needs cargo or Homebrew"; fi
+    else echo "|needs $lack or Homebrew"; fi
     return
   fi
   if [ "$AVAIL_APT" = 1 ]; then echo "apt|$apt_pkg"
-  elif [ "$AVAIL_CARGO" = 1 ]; then echo "cargo|$crate"
+  elif cargo_usable; then echo "cargo|$crate"
   elif [ "$AVAIL_BREW" = 1 ] || brew_needed; then echo "brew|$formula"
-  else echo "|needs apt, cargo or Homebrew"; fi
+  else echo "|needs apt, $lack or Homebrew"; fi
 }
 
 _pypi_name() {
@@ -600,7 +724,7 @@ apt_install() {
   run_priv env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$@"
 }
 
-cargo_install() { cargo install --locked --quiet "$@"; }
+cargo_install() { cargo_with_linker cargo install --locked --quiet "$@"; }
 
 # uv drops the tool's executables in ~/.local/bin (shellrc_additions.sh already
 # exports it, but the current-shell hint should still mention it).
@@ -723,6 +847,15 @@ install_tailscale() {
   url="https://pkgs.tailscale.com/stable/tailscale_${ver}_$(arch_deb).tgz"
   # Both halves: the CLI is useless without a daemon to talk to.
   fetch_bin_from_tarball "$url" tailscale tailscaled
+}
+
+# build-essential (gcc, the linker, libc headers) is the only route, and it is
+# gated by cc_needed() in tool_route so a machine that already links, or that
+# has nothing to build, never comes here at all. Nothing else is added: this
+# exists to make `cargo build` work, not to turn every box into a dev machine.
+install_buildtools() {
+  apt_install build-essential || return 1
+  have_cc
 }
 
 install_rust() {
@@ -925,20 +1058,46 @@ install_gdown()         { uv_install gdown; }
 install_groundcontrol() { uv_install ground-control-tui; }
 install_nvitop()        { uv_install nvitop; }
 
+_path_prepend() {
+  [ -d "$1" ] || return 0
+  case ":$PATH:" in
+    *":$1:"*) ;;
+    *) PATH="$1:$PATH"; export PATH ;;
+  esac
+}
+_path_append() {
+  [ -d "$1" ] || return 0
+  case ":$PATH:" in
+    *":$1:"*) ;;
+    *) PATH="$PATH:$1"; export PATH ;;
+  esac
+}
+
 _install_herdr_plugin() {
   have herdr || return 1
-  # herdr runs each plugin's build commands as a child of this shell, so what is
-  # on PATH here is what the build gets. herdr-statusline's build.sh is a
-  # `cargo build`, and a rust installed by an EARLIER run of this script leaves
-  # ~/.cargo/bin off the PATH of a non-login shell -- install_rust() only
-  # prepends it when it is the one doing the installing.
-  if [ -d "$HOME/.cargo/bin" ]; then
-    case ":$PATH:" in
-      *":$HOME/.cargo/bin:"*) ;;
-      *) PATH="$HOME/.cargo/bin:$PATH"; export PATH ;;
-    esac
-  fi
-  herdr plugin install "$1" -y >/dev/null 2>&1
+  # herdr runs each plugin's build commands as a child of this process, so the
+  # environment assembled here IS the environment the build gets -- and
+  # herdr-statusline's build.sh is a `cargo build`, which needs both cargo and a
+  # linker to be reachable from it.
+  #
+  # ~/.cargo/bin first: install_rust() prepends it only when it is the one doing
+  # the installing, so a rust from an EARLIER run of this script is invisible to
+  # a non-login shell.
+  _path_prepend "$HOME/.cargo/bin"
+  # Then the standard system directories, APPENDED so nothing of the user's own
+  # is shadowed. This is not paranoia about a normal login shell -- it is that
+  # this phase can be reached with almost no PATH at all (`curl | bash` from
+  # cron or CI, a sudo -i that reset it, a herdr pane spawned from a stripped
+  # environment), and a cargo build whose PATH has ~/.cargo/bin but not /usr/bin
+  # finds cargo, compiles most of the crate graph, and only then dies on
+  # `linker "cc" not found` -- on a machine where /usr/bin/cc exists. Cheap
+  # insurance against a failure that looks exactly like a missing compiler.
+  local d
+  for d in /usr/local/bin /usr/bin /bin /usr/sbin /sbin; do _path_append "$d"; done
+  if d="$(brew_prefix 2>/dev/null)"; then _path_append "$d/bin"; fi
+  # And if this machine links with something other than `cc`, say so -- rustc
+  # asks for `cc` by name and would not find gcc or clang on its own.
+  cargo_with_linker herdr plugin install "$1" -y >/dev/null 2>&1
 }
 install_herdr_statusline()  { _install_herdr_plugin iiii1224/herdr-statusline; }
 install_herdr_file_viewer() { _install_herdr_plugin smarzban/herdr-file-viewer; }
@@ -1047,10 +1206,7 @@ install_tools() {
   # install_preview_prereqs() already does this, but only on an interactive run;
   # `-y`, --tools-only and the tty-less `curl | bash` never went through it.
   mkdir -p "$HOME/.local/bin" 2>/dev/null || true
-  case ":$PATH:" in
-    *":$HOME/.local/bin:"*) ;;
-    *) PATH="$HOME/.local/bin:$PATH"; export PATH ;;
-  esac
+  _path_prepend "$HOME/.local/bin"
   # A Homebrew that is installed but was never put on PATH is common (see
   # brew_prefix). Wire it up now so brew_install() can actually use it, and so
   # "brew: already installed" is a true statement rather than a dead end.
