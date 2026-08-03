@@ -9,9 +9,13 @@ curl -fsSL albertorota.dev/setmeup.sh | bash
 
 There is no checkout to run from at that point, so the script clones this
 repo to `~/dotfiles` and hands over to the copy inside it — then carries on
-exactly as a local run would. (No git on the machine yet? It falls back to a
-release tarball; git itself is one of the tools it installs.) Pass options
-through with `bash -s --`, and override where it lands with `DOTFILES_DIR`:
+exactly as a local run would. Run the same line on a machine that already has
+that checkout and it pulls instead of cloning: `git pull --ff-only`, or a
+refetch of the tarball if this is a machine that had no git when it was set
+up. A directory that is neither is left completely alone. (No git yet? It
+falls back to a release tarball; git itself is one of the tools it installs.)
+Pass options through with `bash -s --`, and override where it lands with
+`DOTFILES_DIR`:
 
 ```
 curl -fsSL albertorota.dev/setmeup.sh | bash -s -- --no-tools
@@ -24,13 +28,14 @@ accent colours, the machine name, which status line components to show, how
 oh-my-posh applies its accents and which tools to put on the machine — with
 live previews of the prompt, the status bars, herdr and the install plan —
 then installs the lot (idempotent, backs up any real file it would overwrite
-as `<file>.bak`).
+as `<file>.bak` — and never writes over a backup it already made).
 
 ```
 ./install.sh                 # prompts on the first run, reuses the answers after
 ./install.sh --reconfigure   # change the colours / machine name / tool selection
 ./install.sh --primary '#78dce8' --secondary '#ffd866' --machine proxima -y
 ./install.sh --skip-uv       # don't install/update uv (offline machines, CI)
+./install.sh --shell zsh     # wire up only zsh (auto | bash | zsh | both)
 ./install.sh --no-tui        # plain text wizard instead of the setup UI
 ./install.sh --no-tools      # render and link config only, install nothing
 ./install.sh --tools-only    # install tools only, render and link nothing
@@ -65,8 +70,23 @@ Both work, from the same one-liner. What differs on a Mac:
   macOS hostnames come with apostrophes, spaces and more than 24 characters.
 
 Everything here runs under **bash 3.2**, which is what `/bin/bash` is on macOS
-— so `curl … | bash` needs nothing installed first. Zsh is not supported: the
-shell config is bash, and on macOS that means starting one.
+— so `curl … | bash` needs nothing installed first.
+
+### bash and zsh
+
+macOS has logged people into **zsh** since Catalina and most Linux boxes into
+**bash**, so both are configured. There is one shared file,
+`shell/shellrc_additions.sh`, sourced from `~/.bashrc` and `~/.zshrc` alike; it
+works out which shell is reading it and branches only where the two genuinely
+differ — `oh-my-posh init bash` vs `zsh`, readline `bind` vs ZLE `bindkey`,
+`~/.fzf.bash` vs `~/.fzf.zsh`, and `compinit` (zsh has no completion at all
+until something runs it, and nothing else will).
+
+Which rc files get the line is detected, not assumed: bash always, plus zsh
+when it is your login shell or a `~/.zshrc` already exists. `--shell
+bash|zsh|both` overrides that. zsh reads neither `~/.bashrc` nor `~/.profile`,
+which is why it needs its own line — and why a Mac set up by an earlier version
+of this repo looked like nothing had installed.
 
 ### The setup UI
 
@@ -75,7 +95,7 @@ its dependencies declared in a PEP 723 header, so `uv run --script` fetches
 Python and Textual itself — that is the whole reason install.sh puts uv on
 the machine before anything else. uv lands in `~/.local/bin` (or
 `$UV_INSTALL_DIR`/`$XDG_BIN_HOME` if set) and is put on PATH permanently
-through `~/.config/dotfiles/uv-env.sh`, which `shell/bashrc_additions.sh`
+through `~/.config/dotfiles/uv-env.sh`, which `shell/shellrc_additions.sh`
 sources. The installer is run with `INSTALLER_NO_MODIFY_PATH=1` on purpose:
 left to itself it appends a PATH line to `~/.profile`, which on an
 already-installed machine is a symlink into *this repo*.
@@ -142,9 +162,9 @@ opening a terminal does, and getting it wrong on a machine you only reach
 over ssh is worse than any wrong colour.
 
 It is run rather than `exec`ed, so quitting herdr leaves you in a normal
-shell, and `NO_HSL=1 bash -l` skips it outright. It also declines to start
-when it would be wrong or recursive: inside herdr already (every pane herdr
-spawns re-runs `~/.bashrc`), inside tmux, inside an AI agent's shell, on a
+shell, and `NO_HSL=1 bash -l` (or `zsh -l`) skips it outright. It also declines
+to start when it would be wrong or recursive: inside herdr already (every pane
+herdr spawns re-runs the shell rc), inside tmux, inside an AI agent's shell, on a
 non-interactive shell, under an ssh forced command, with `TERM=dumb`, or
 when `hsl` isn't installed — it ships with the herdr-statusline plugin.
 
@@ -165,10 +185,14 @@ to guarantee no prompt (for a scripted or headless run).
 Before install.sh symlinks or copies over a path, if a real (non-symlink) file
 is already there it gets moved aside to `<file>.bak` first — so nothing you had
 before is ever lost, and only the very first run backs it up (a second run
-sees its own symlink/copy there instead and leaves the `.bak` alone). Every
+sees its own symlink/copy there instead and leaves the `.bak` alone). A
+backup is never written over: if a real file turns up at a path that already
+has a `.bak` — you replaced a symlink with one of your own, then re-ran —
+it is filed as `.bak.2`, and the original stays where it is. Every
 path it manages is recorded in `~/.config/dotfiles/manifest.txt`.
 `./reset.sh` reads that manifest, removes everything on it, restores each
-path's `.bak` if one exists, and strips the block it added to `~/.bashrc` —
+path's `.bak` if one exists, and strips the block it added to `~/.bashrc` and
+`~/.zshrc` —
 bringing the machine back to how it looked before `./install.sh` ever ran.
 Reset undoes *config*, not the software: tools stay installed, and each has
 its own uninstall.
@@ -193,16 +217,16 @@ added to the catalogue later switches itself on (an absent answer means yes).
 Tailscale is installed but **not** connected: `tailscale up` opens a browser to
 authenticate the machine, so it is left to you. The run ends with a single
 copy-and-paste block containing everything still outstanding — the `PATH`
-export for the shell you are in, the Tailscale step if one is needed, and
-`source ~/.bashrc` — so finishing is one paste rather than a hunt through the
-output:
+export for the shell you are in, the Tailscale step if one is needed, and a
+`source` of your login shell's rc — so finishing is one paste rather than a
+hunt through the output:
 
 ```
 Copy and paste this to finish:
 
     export PATH="/home/you/.local/bin:$PATH"
     sudo tailscale up
-    source ~/.bashrc
+    source /home/you/.bashrc
 ```
 
 Without root, Tailscale still installs (static binaries) and the block gives
@@ -234,7 +258,7 @@ LazyVim refuses to touch a `~/.config/nvim` that already has files in it;
 Homebrew is only bootstrapped when it is the *sole* route to something you
 actually selected (on Linux, in practice `nvtop` on a box with no apt; on
 macOS, git or Tailscale); and on Debian and Ubuntu, where the packages are
-called `batcat` and `fdfind`, `bashrc_additions.sh` aliases them back to
+called `batcat` and `fdfind`, `shellrc_additions.sh` aliases them back to
 `bat` and `fd` — but only when the real binaries aren't there, so a cargo or
 brew install isn't shadowed.
 
@@ -243,7 +267,7 @@ carries on; re-run `./install.sh` to retry it. Anything with no route on this
 machine is listed as blocked rather than silently skipped.
 
 New tools land on PATH permanently through
-`~/.config/dotfiles/tools-env.sh` (sourced by `bashrc_additions.sh`, same
+`~/.config/dotfiles/tools-env.sh` (sourced by `shellrc_additions.sh`, same
 shape as `uv-env.sh`). For the terminal you ran the install in, install.sh
 prints a copy-paste `export PATH=...` at the end.
 
@@ -286,12 +310,17 @@ prints a copy-paste `export PATH=...` at the end.
   *slurm* mode, where it reports the allocation: primary on a normal shell,
   secondary inside a job.
 - `shell/` — portable additions layered on top of each machine's own
-  `.bashrc`/`.profile`:
-  - `bashrc_additions.sh` — aliases, PATH additions, oh-my-posh/zoxide/fzf
-    init, tmux auto-attach, env vars. Sourced from the tail of `~/.bashrc`
-    (install.sh appends one `source` line, guarded by a marker comment).
+  `.bashrc`/`.zshrc`/`.profile`:
+  - `shellrc_additions.sh` — aliases, PATH additions, oh-my-posh/zoxide/fzf
+    init, key bindings, env vars. **One file for bash and zsh**, which
+    branches on whichever is reading it. Sourced from the tail of `~/.bashrc`
+    and `~/.zshrc` (install.sh appends one `source` line to each, guarded by a
+    marker comment).
+  - `bashrc_additions.sh` — a four-line redirect to the above, kept only so a
+    machine set up before the rename keeps working until install.sh is re-run
+    there. Deletable once every machine has had a run.
   - `bashrc_functions` — shell functions (currently just `syncop`, a
-    generic rsync-between-machines helper).
+    generic rsync-between-machines helper), sourced by `shellrc_additions.sh`.
   - `profile` — symlinked directly to `~/.profile`.
 - `lib/derive.sh` — everything computed *from* the answers: the palette, the
   validators, `PRIMARY_DIM`, the `OMP_*` colours and the four assembled status

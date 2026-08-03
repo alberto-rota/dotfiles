@@ -37,6 +37,11 @@ DOTFILES_REPO="${DOTFILES_REPO:-https://github.com/$DOTFILES_SLUG.git}"
 DOTFILES_BRANCH="${DOTFILES_BRANCH:-main}"
 DOTFILES_DIR="${DOTFILES_DIR:-$HOME/dotfiles}"
 DOTFILES_TARBALL="${DOTFILES_TARBALL:-https://codeload.github.com/$DOTFILES_SLUG/tar.gz/refs/heads/$DOTFILES_BRANCH}"
+# Dropped into a checkout that came from the tarball route rather than from git.
+# It is what makes "refresh it" possible on a machine with no git: without a
+# .git there is nothing to pull, and re-extracting over a directory is only safe
+# when we know every file in it was put there by us. Absent = hands off.
+TARBALL_STAMP=".dotfiles-tarball"
 
 # The directory this script is in, or empty if it did not come from a file.
 self_dir() {
@@ -63,6 +68,18 @@ bootstrap_have_git() {
   esac
 }
 
+# Download the repo as a tarball and unpack it over $1, leaving the stamp that
+# says the result is ours. Used both to create a checkout on a machine with no
+# git and to refresh one later.
+fetch_tarball() {
+  local dir="$1"
+  command -v curl >/dev/null 2>&1 || return 1
+  mkdir -p "$dir"
+  curl -fsSL --retry 2 --connect-timeout 10 --max-time 120 "$DOTFILES_TARBALL" \
+    | tar -xz -C "$dir" --strip-components 1 || return 1
+  : > "$dir/$TARBALL_STAMP"
+}
+
 bootstrap() {
   echo "dotfiles: no checkout around this script, fetching one."
   echo "  repo   $DOTFILES_REPO ($DOTFILES_BRANCH)"
@@ -70,13 +87,32 @@ bootstrap() {
   echo ""
 
   if is_checkout "$DOTFILES_DIR"; then
+    # There is already a checkout here -- the normal case on any machine this
+    # has run on before. Bring it up to date and use it; never re-clone over it.
     echo "Already cloned; refreshing."
-    # Non-fatal on purpose: local edits, a diverged branch or no network are all
-    # reasons to carry on with the checkout that is already there rather than to
-    # refuse to install.
-    if [ -d "$DOTFILES_DIR/.git" ] && bootstrap_have_git; then
-      git -C "$DOTFILES_DIR" pull --ff-only --quiet 2>/dev/null \
-        || echo "  NOTE: couldn't fast-forward; using the checkout as it is."
+    # Non-fatal on purpose, every branch of it: local edits, a diverged branch
+    # or no network are all reasons to carry on with the checkout that is
+    # already there rather than to refuse to install.
+    if [ -d "$DOTFILES_DIR/.git" ]; then
+      if bootstrap_have_git; then
+        git -C "$DOTFILES_DIR" pull --ff-only --quiet 2>/dev/null || {
+          echo "  NOTE: couldn't fast-forward (local edits, a diverged branch or"
+          echo "        no network); using the checkout as it is."
+        }
+      else
+        echo "  NOTE: no usable git here, so a git checkout can't be pulled;"
+        echo "        using it as it is."
+      fi
+    elif [ -f "$DOTFILES_DIR/$TARBALL_STAMP" ]; then
+      # No .git to pull, but the stamp says this one came from the tarball route
+      # below, so every file in it is ours and re-extracting is safe. It only
+      # overwrites tracked files: .generated/ and the saved answers survive.
+      echo "  (no .git -- refetching the tarball)"
+      fetch_tarball "$DOTFILES_DIR" \
+        || echo "  NOTE: couldn't refetch; using the checkout as it is."
+    else
+      echo "  NOTE: not a git checkout, and not one this script fetched --"
+      echo "        leaving its contents alone and installing from them."
     fi
   elif [ -e "$DOTFILES_DIR" ] && [ -n "$(ls -A "$DOTFILES_DIR" 2>/dev/null)" ]; then
     echo "ERROR: $DOTFILES_DIR already exists, is not empty, and is not a" >&2
@@ -97,9 +133,7 @@ bootstrap() {
     command -v curl >/dev/null 2>&1 || {
       echo "ERROR: neither git nor curl on this machine; cannot fetch the repo." >&2
       exit 1; }
-    mkdir -p "$DOTFILES_DIR"
-    curl -fsSL --retry 2 --connect-timeout 10 --max-time 120 "$DOTFILES_TARBALL" \
-      | tar -xz -C "$DOTFILES_DIR" --strip-components 1 || {
+    fetch_tarball "$DOTFILES_DIR" || {
       echo "ERROR: could not download or unpack $DOTFILES_TARBALL" >&2; exit 1; }
   fi
 
@@ -193,7 +227,7 @@ SHOW_TEMP=1
 SHOW_SLURM=1
 SHOW_DATETIME=1
 
-# Launch hsl (herdr + the status line) from ~/.bashrc at login. OFF by default,
+# Launch hsl (herdr + the status line) from the shell rc at login. OFF by default,
 # and deliberately so: it is the one answer here that changes what happens when
 # you open a terminal, and getting it wrong on a machine you reach only over ssh
 # is the difference between "wrong colours" and "cannot get a shell". Turn it on
@@ -229,6 +263,10 @@ ASSUME_YES=0
 SKIP_UV=0
 NO_TUI=0
 TOOLS_ONLY=0
+# Which shells get wired up to shell/shellrc_additions.sh. "auto" works it out
+# from this machine (see "which shells this machine logs into" below);
+# bash/zsh/both force it.
+SHELL_TARGET=auto
 
 usage() {
   cat <<EOF
@@ -242,6 +280,7 @@ Usage: ./install.sh [options]
       --machine NAME    Set the machine name non-interactively.
   -y, --non-interactive Never prompt; use saved answers, or the defaults if none.
       --skip-uv         Don't install/update uv (offline machines, CI).
+      --shell WHICH     Which shells to wire up: auto (default), bash, zsh, both.
       --no-tui          Use the plain text wizard instead of the Textual UI.
       --no-tools        Only render and link config; install no tools.
       --tools-only      Only install tools; render and link nothing.
@@ -305,6 +344,7 @@ while [ $# -gt 0 ]; do
     -r|--reconfigure) RECONFIGURE=1 ;;
     -y|--non-interactive) ASSUME_YES=1 ;;
     --skip-uv)   SKIP_UV=1 ;;
+    --shell)     SHELL_TARGET="${2:?--shell needs a value}"; shift ;;
     --no-tui)    NO_TUI=1 ;;
     --no-tools)  INSTALL_TOOLS=0 ;;
     --tools-only) TOOLS_ONLY=1 ;;
@@ -316,6 +356,75 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+
+# --- which shells this machine logs into ----------------------------------------
+# The prompt, the aliases and every PATH addition arrive through one line
+# appended to a shell's rc file, so this has to know WHICH rc. macOS has logged
+# people into zsh since Catalina and most Linux boxes into bash, and plenty of
+# machines see both -- so it is detected rather than assumed, and --shell forces
+# it either way.
+#
+# The LOGIN shell is not the shell running this script: under `curl | bash` that
+# is bash even on a Mac whose login shell is zsh. $SHELL is the answer every
+# terminal emulator honours; the passwd database is the fallback for a cron/CI
+# environment that never set it (macOS has no getent, hence dscl).
+# The `|| true` on both lookups is not optional: this script runs under
+# `set -o pipefail`, so a machine with no dscl/getent (or a user missing from
+# the local database, which is every LDAP-backed HPC login node) would fail the
+# assignment and take the whole install down with it.
+login_shell_name() {
+  local s="${SHELL:-}"
+  if [ -z "$s" ]; then
+    if is_mac; then
+      s="$(dscl . -read "/Users/$(id -un)" UserShell 2>/dev/null | awk '{print $NF}' || true)"
+    else
+      s="$(getent passwd "$(id -un)" 2>/dev/null | awk -F: '{print $7}' || true)"
+    fi
+  fi
+  printf '%s' "${s##*/}"
+}
+
+LOGIN_SHELL="$(login_shell_name)"
+# Nothing to go on at all -- no $SHELL, no passwd entry. bash is the assumption,
+# which is also what gets wired in that case, so the two agree.
+[ -n "$LOGIN_SHELL" ] || LOGIN_SHELL=bash
+WIRE_BASH=0
+WIRE_ZSH=0
+case "$SHELL_TARGET" in
+  bash) WIRE_BASH=1 ;;
+  zsh)  WIRE_ZSH=1 ;;
+  both) WIRE_BASH=1; WIRE_ZSH=1 ;;
+  auto)
+    # bash always: it is on every machine this repo targets, and `bash` typed
+    # inside a zsh session should still come up with the prompt and the aliases.
+    # zsh when there is evidence somebody uses it here -- it is the login shell,
+    # or a ~/.zshrc already exists. A zsh merely INSTALLED is not evidence: it
+    # sits unused on most Linux boxes, and creating a ~/.zshrc nobody asked for
+    # changes what their next login does.
+    WIRE_BASH=1
+    if [ "$LOGIN_SHELL" = zsh ] || [ -f "$HOME/.zshrc" ]; then WIRE_ZSH=1; fi
+    ;;
+  *) echo "Unknown --shell '$SHELL_TARGET' -- want auto, bash, zsh or both." >&2; exit 2 ;;
+esac
+
+# The rc that the shell you are actually dropped into at login will read: what
+# the "source this to finish" line at the end names, and where the hsl autostart
+# would run from. Falls back to whichever rc IS being wired when the login shell
+# is something else (or was excluded with --shell).
+if [ "$LOGIN_SHELL" = zsh ] && [ "$WIRE_ZSH" -eq 1 ]; then
+  LOGIN_RC="$HOME/.zshrc"
+elif [ "$WIRE_BASH" -eq 1 ]; then
+  LOGIN_RC="$HOME/.bashrc"
+else
+  LOGIN_RC="$HOME/.zshrc"
+fi
+# Which shell to name in the "how do I get a plain login shell" escape hatch the
+# hsl notes print. Only the two this repo wires; anything else gets bash, which
+# is the one guaranteed to be there.
+case "$LOGIN_SHELL" in
+  zsh) HSL_ESCAPE_SHELL=zsh ;;
+  *)   HSL_ESCAPE_SHELL=bash ;;
+esac
 
 # --- uv --------------------------------------------------------------------
 # First thing this script does on a machine, before anything is asked or
@@ -335,16 +444,16 @@ uv_install_dir() {
   else printf '%s' "$HOME/.local/bin"; fi
 }
 
-# The permanent half of "put uv on PATH": a tiny file that bashrc_additions.sh
-# sources on every shell. It is written even when uv was already installed, so a
-# machine where uv landed somewhere unusual (UV_INSTALL_DIR/XDG_BIN_HOME) still
-# gets that directory on PATH for good.
+# The permanent half of "put uv on PATH": a tiny file that shellrc_additions.sh
+# sources on every shell, bash and zsh alike. It is written even when uv was
+# already installed, so a machine where uv landed somewhere unusual
+# (UV_INSTALL_DIR/XDG_BIN_HOME) still gets that directory on PATH for good.
 persist_uv_path() {
   local dir="$1"
   mkdir -p "$(dirname "$UV_ENV_FILE")"
   cat > "$UV_ENV_FILE" <<EOF
 # GENERATED by dotfiles/install.sh -- puts uv's install directory on PATH.
-# Sourced from shell/bashrc_additions.sh (and therefore from ~/.bashrc).
+# Sourced from shell/shellrc_additions.sh (and so from ~/.bashrc and ~/.zshrc).
 # Edit install.sh, not this file; it is rewritten on every run.
 case ":\$PATH:" in
   *":$dir:"*) ;;
@@ -353,7 +462,7 @@ esac
 # The installer's own env file, if it wrote one (it may add more than PATH).
 [ -f "$dir/env" ] && . "$dir/env"
 EOF
-  echo "uv on PATH permanently via $UV_ENV_FILE (sourced from bashrc_additions.sh)"
+  echo "uv on PATH permanently via $UV_ENV_FILE (sourced from shellrc_additions.sh)"
 }
 
 ensure_uv() {
@@ -937,6 +1046,15 @@ echo "  secondary $SECONDARY"
 echo "  machine   $MACHINE"
 echo "  status    host=$SHOW_HOST gpu=$SHOW_GPU temp=$SHOW_TEMP slurm=$SHOW_SLURM datetime=$SHOW_DATETIME"
 echo "  omp       glyph=$OMP_ICON_MODE/$OMP_ICON text=$OMP_TEXT chevrons=$OMP_CHEVRON_OK,$OMP_CHEVRON_ERROR"
+SHELLS_DESC=""
+[ "$WIRE_BASH" -eq 1 ] && SHELLS_DESC="~/.bashrc"
+[ "$WIRE_ZSH" -eq 1 ] && SHELLS_DESC="${SHELLS_DESC:+$SHELLS_DESC + }~/.zshrc"
+echo "  shells    $SHELLS_DESC  (login shell: $LOGIN_SHELL)"
+case "$LOGIN_SHELL" in
+  bash|zsh|sh) ;;
+  *) echo "            NOTE: $LOGIN_SHELL is not one this repo can configure; the files"
+     echo "            above are still written, so 'bash' or 'zsh' will have everything." ;;
+esac
 if [ "$HSL_LOGIN" = 1 ]; then
   echo "  login     hsl (herdr + status line) starts at every interactive login"
 else
@@ -981,7 +1099,7 @@ echo "Saved answers to $ANSWERS"
 # --- tools --------------------------------------------------------------------
 # Defined before the phase runs, because --tools-only exits straight after it.
 #
-# A NEW shell needs nothing: bashrc_additions.sh sources the tools-env.sh that
+# A NEW shell needs nothing: shellrc_additions.sh sources the tools-env.sh that
 # install_tools() just wrote, and already exports ~/.local/bin, ~/.cargo/bin and
 # ~/.local/nvim/bin itself. This is purely for the terminal the install ran in,
 # which will otherwise keep saying "command not found" for something that is
@@ -1002,7 +1120,7 @@ needs_tailscale_up() {
 }
 
 # One block to copy and paste when the run is done: everything left that needs a
-# human. A NEW shell needs none of it (bashrc_additions.sh sources the
+# human. A NEW shell needs none of it (shellrc_additions.sh sources the
 # tools-env.sh install_tools() wrote), but the terminal the install ran in will
 # otherwise keep saying "command not found" for something very much installed --
 # the one thing that reliably makes a finished setup look broken.
@@ -1033,8 +1151,10 @@ print_next_steps() {
   fi
 
   # Last, because it is what makes the shell you are in match the one every new
-  # shell will be: PATH, aliases, the prompt.
-  steps+=("source ~/.bashrc")
+  # shell will be: PATH, aliases, the prompt. Named for the shell this machine
+  # actually logs into -- on a Mac that is ~/.zshrc, and "source ~/.bashrc"
+  # there does precisely nothing.
+  steps+=("source $LOGIN_RC")
 
   echo ""
   echo "Copy and paste this to finish:"
@@ -1043,7 +1163,7 @@ print_next_steps() {
   echo ""
   if [ "$HSL_LOGIN" = 1 ]; then
     echo "  (that last line will start herdr, since hsl-at-login is on --"
-    echo "   'NO_HSL=1 source ~/.bashrc' if you would rather it did not)"
+    echo "   'NO_HSL=1 source $LOGIN_RC' if you would rather it did not)"
     echo ""
   fi
 }
@@ -1071,15 +1191,31 @@ fi
 echo ""
 
 # --- plumbing -----------------------------------------------------------------
+# Where to put the real file currently sitting at $1, WITHOUT ever writing over
+# a backup that is already there. The first .bak is the important one -- it is
+# this machine's own original file, from before any of this ran, and it is the
+# one reset.sh puts back -- so it is never reused. Anything found at the same
+# path later (somebody replaced our symlink with a file of their own, then
+# re-ran install.sh) gets a numbered name of its own instead of taking its
+# place. Backups are only ever created here, never overwritten and never
+# removed; reset.sh is the only thing that consumes one.
+backup_name() {
+  local dst="$1" n=2
+  if [ ! -e "$dst.bak" ] && [ ! -L "$dst.bak" ]; then printf '%s' "$dst.bak"; return 0; fi
+  while [ -e "$dst.bak.$n" ] || [ -L "$dst.bak.$n" ]; do n=$((n + 1)); done
+  printf '%s' "$dst.bak.$n"
+}
+
 link() {
-  local src="$1" dst="$2"
+  local src="$1" dst="$2" bak
   mkdir -p "$(dirname "$dst")"
-  # Only a real (non-symlink) file gets backed up, and only once: on a second
-  # run dst is already our own symlink, so this never overwrites the backup
-  # with our own rendered output.
+  # Only a real (non-symlink) file gets backed up: on a second run dst is
+  # already our own symlink, so our rendered output is never mistaken for
+  # something worth keeping.
   if [ -e "$dst" ] && [ ! -L "$dst" ]; then
-    mv "$dst" "$dst.bak"
-    echo "Backed up existing $dst -> $dst.bak"
+    bak="$(backup_name "$dst")"
+    mv "$dst" "$bak"
+    echo "Backed up existing $dst -> $bak"
   fi
   ln -sfn "$src" "$dst"
   echo "Linked $dst -> $src"
@@ -1093,15 +1229,17 @@ is_already_managed() {
 # copy() is for plain files (bin/) rather than rendered/symlinked config: same
 # backup-before-overwrite courtesy as link(), but since a copy leaves no marker
 # of its own (unlike a symlink), "already ours" is decided from last run's
-# manifest instead of [ ! -L "$dst" ]. The [ ! -e "$dst.bak" ] guard is the
-# fallback if the manifest is missing or stale, so a real backup never gets
-# clobbered by our own previous copy either way.
+# manifest instead of [ ! -L "$dst" ]. `cmp` is the fallback for a missing or
+# stale manifest: a destination that is byte-for-byte the file we are about to
+# write is our own previous copy, and backing that up would be filing away a
+# copy of ourselves.
 copy() {
-  local src="$1" dst="$2"
+  local src="$1" dst="$2" bak
   mkdir -p "$(dirname "$dst")"
-  if [ -e "$dst" ] && ! is_already_managed "$dst" && [ ! -e "$dst.bak" ]; then
-    cp -f "$dst" "$dst.bak"
-    echo "Backed up existing $dst -> $dst.bak"
+  if [ -e "$dst" ] && ! is_already_managed "$dst" && ! cmp -s "$src" "$dst"; then
+    bak="$(backup_name "$dst")"
+    cp -f "$dst" "$bak"
+    echo "Backed up existing $dst -> $bak"
   fi
   cp -f "$src" "$dst"
   chmod +x "$dst"
@@ -1276,27 +1414,82 @@ if [ -d "$DOTFILES/bin" ]; then
 fi
 
 # --- shell ---
-# Sourced by bashrc_additions.sh at the very end. Rendered rather than symlinked
-# straight out of the repo because it carries the answer (@HSL_LOGIN@) -- with it
-# baked in, an "off" answer is a file that returns immediately instead of one
-# that re-decides on every single shell start.
+# Sourced by shellrc_additions.sh at the very end. Rendered rather than
+# symlinked straight out of the repo because it carries the answer (@HSL_LOGIN@)
+# -- with it baked in, an "off" answer is a file that returns immediately
+# instead of one that re-decides on every single shell start.
 render_script shell/hsl-login.sh.in shell/hsl-login.sh
 link "$GENERATED/shell/hsl-login.sh" "$XDG_CONFIG/dotfiles/hsl-login.sh"
 link "$DOTFILES/shell/bashrc_functions" "$HOME/.bashrc_functions"
 link "$DOTFILES/shell/profile"          "$HOME/.profile"
 
-MARKER="# >>> dotfiles bashrc_additions >>>"
-if ! grep -qF "$MARKER" "$HOME/.bashrc" 2>/dev/null; then
+# One line in one rc file is the whole hook: everything else hangs off
+# shell/shellrc_additions.sh, which bash and zsh both read (it branches on which
+# of the two is running it). The block is marked at both ends so it can be found
+# again -- to refresh it, and for reset.sh to take it back out.
+RC_MARKER="# >>> dotfiles shell additions >>>"
+RC_MARKER_END="# <<< dotfiles shell additions <<<"
+# What those markers said while this was bash-only, and while the file was
+# called bashrc_additions.sh. A machine set up before then has that block in its
+# ~/.bashrc pointing at a path that no longer exists, so it is replaced rather
+# than left to break every new shell there.
+RC_MARKER_OLD="# >>> dotfiles bashrc_additions >>>"
+RC_MARKER_OLD_END="# <<< dotfiles bashrc_additions <<<"
+
+# Delete a marked block from a file, in place. Filtered to a temp file and
+# copied back rather than `sed -i`, which is GNU-only -- BSD sed takes a
+# MANDATORY backup suffix after -i and would read the range as that suffix.
+# Copying the CONTENT back (rather than mv) also keeps the original inode, which
+# matters because ~/.bashrc may be a symlink or have permissions somebody chose.
+rc_strip_block() {
+  local file="$1" start="$2" end="$3" tmp
+  tmp="$(mktemp "${TMPDIR:-/tmp}/dotfiles-rc.XXXXXX")"
+  if sed "/^${start}\$/,/^${end}\$/d" "$file" > "$tmp"; then
+    cat "$tmp" > "$file"
+    rm -f "$tmp"
+    return 0
+  fi
+  rm -f "$tmp"
+  return 1
+}
+
+# rc_wire FILE -- make FILE source the additions, exactly once.
+rc_wire() {
+  local file="$1" want="source \"$DOTFILES/shell/shellrc_additions.sh\""
+  if [ ! -e "$file" ]; then
+    echo "Creating $file (this machine had none)"
+  elif grep -qF "$RC_MARKER_OLD" "$file" 2>/dev/null; then
+    rc_strip_block "$file" "$RC_MARKER_OLD" "$RC_MARKER_OLD_END" \
+      && echo "Replaced the old bashrc_additions block in $file"
+  fi
+  if grep -qF "$RC_MARKER" "$file" 2>/dev/null; then
+    if grep -qF "$want" "$file" 2>/dev/null; then
+      echo "$file already sources the dotfiles additions, skipping"
+      return 0
+    fi
+    # Our block, pointing somewhere else: the checkout moved. Rewritten rather
+    # than appended to, or the shell would end up sourcing two of them (one of
+    # which is gone).
+    rc_strip_block "$file" "$RC_MARKER" "$RC_MARKER_END" \
+      && echo "The dotfiles block in $file pointed elsewhere; rewriting it"
+  fi
   {
     echo ""
-    echo "$MARKER"
-    echo "source \"$DOTFILES/shell/bashrc_additions.sh\""
-    echo "# <<< dotfiles bashrc_additions <<<"
-  } >> "$HOME/.bashrc"
-  echo "Appended source line to ~/.bashrc"
-else
-  echo "~/.bashrc already sources dotfiles additions, skipping"
-fi
+    echo "$RC_MARKER"
+    echo "$want"
+    echo "$RC_MARKER_END"
+  } >> "$file"
+  echo "Appended the dotfiles source line to $file"
+}
+
+[ "$WIRE_BASH" -eq 1 ] && rc_wire "$HOME/.bashrc"
+# zsh never reads ~/.bashrc or ~/.profile, so it needs its own line. ~/.zshrc is
+# enough on its own: zsh reads it for every INTERACTIVE shell, login or not
+# (unlike bash, which splits that between ~/.bashrc and ~/.profile), and a
+# non-interactive zsh has no use for a prompt or key bindings anyway. Creating
+# the file when it is absent is safe here, unlike ~/.bash_profile below --
+# there is no other zsh startup file it could shadow.
+[ "$WIRE_ZSH" -eq 1 ] && rc_wire "$HOME/.zshrc"
 
 # A bash LOGIN shell reads the FIRST of ~/.bash_profile, ~/.bash_login,
 # ~/.profile that exists and stops there. This repo symlinks ~/.profile (which
@@ -1310,8 +1503,12 @@ fi
 #
 # Only ever appended to a ~/.bash_profile that ALREADY EXISTS: creating one
 # would take the symlinked ~/.profile out of the chain rather than put it in.
+#
+# zsh needs no equivalent: it reads ~/.zshenv, ~/.zprofile, ~/.zshrc and
+# ~/.zlogin in turn and none of them shadows another, so wiring ~/.zshrc above
+# is the whole job there.
 PROFILE_MARKER="# >>> dotfiles bash_profile >>>"
-if [ -f "$HOME/.bash_profile" ]; then
+if [ "$WIRE_BASH" -eq 1 ] && [ -f "$HOME/.bash_profile" ]; then
   if grep -qF "$PROFILE_MARKER" "$HOME/.bash_profile" 2>/dev/null; then
     echo "~/.bash_profile already chains to ~/.bashrc, skipping"
   elif grep -qE '(^|[^-[:alnum:]_])~?/?\.?bashrc' "$HOME/.bash_profile" 2>/dev/null; then
@@ -1371,8 +1568,8 @@ echo "    what a run would do without doing it."
 if [ "$HSL_LOGIN" = 1 ]; then
   if command -v hsl >/dev/null 2>&1; then
     echo "  - hsl (herdr + the status line) will start at every interactive login."
-    echo "    'NO_HSL=1 bash -l' gets you a plain shell; quitting herdr drops you into"
-    echo "    one too (it is run, not exec'd, so a login can't be lost to it)."
+    echo "    'NO_HSL=1 $HSL_ESCAPE_SHELL -l' gets you a plain shell; quitting herdr drops you"
+    echo "    into one too (it is run, not exec'd, so a login can't be lost to it)."
   else
     echo "  - NOTE: the hsl autostart is on, but 'hsl' is not on PATH. It ships with"
     echo "    the herdr-statusline plugin; until that is installed the autostart just"

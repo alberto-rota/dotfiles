@@ -1,8 +1,12 @@
 clear
 
+# ~/.bashrc pulls in shell/shellrc_additions.sh, which sets POSH_PATH and runs
+# `oh-my-posh init` itself -- guarded, for an interactive shell and a bash new
+# enough to read oh-my-posh's own init (4.2+; macOS's is 3.2, where it is a
+# syntax error at every shell start). This file used to repeat that init
+# unguarded, which on a Mac meant a login shell printing those errors over the
+# top of a prompt the line above had already set up.
 source ~/.bashrc
-export POSH_PATH="$HOME/.cache/oh-my-posh/themes/albe-monokai2.omp.json"
-command -v oh-my-posh >/dev/null 2>&1 && eval "$(oh-my-posh init bash --config "$POSH_PATH")"
 # Guarded: on a machine with no Rust (a fresh Mac, a login node, any box where
 # the tools phase was skipped or declined) sourcing this unconditionally makes
 # every login shell open with "No such file or directory". bashrc_additions.sh

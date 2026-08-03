@@ -4,3 +4,10 @@
 
 # Byte-compiled tui/configure.py, if it ever gets imported (the test harness does).
 __pycache__/
+
+# Left by install.sh's bootstrap when it fetched this checkout as a tarball
+# rather than cloning it (a machine with no git). It marks the directory as
+# disposable, so a later run knows it may refetch over the top. Never present
+# in a git checkout -- but ignored so it cannot be committed from one either.
+.dotfiles-tarball
+

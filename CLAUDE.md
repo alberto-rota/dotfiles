@@ -16,6 +16,7 @@ curl -fsSL albertorota.dev/setmeup.sh | bash -s -- --no-tools   # ...with option
 ./install.sh --reconfigure   # change the colours / machine name / tool selection
 ./install.sh --primary '#78dce8' --secondary '#ffd866' --machine proxima -y
 ./install.sh --skip-uv       # don't install/update uv (offline, CI)
+./install.sh --shell zsh     # wire up only zsh (auto | bash | zsh | both)
 ./install.sh --no-tui        # plain text wizard instead of the setup UI
 ./install.sh --no-tools      # render and link config only, install nothing
 ./install.sh --tools-only    # install tools only, render and link nothing
@@ -43,10 +44,12 @@ There's no test suite. To validate a change, run `./install.sh` (it's idempotent
 
 So install.sh is self-bootstrapping. `self_dir()` returns empty when the script did not come from a readable file, and `is_checkout()` (`install.sh` **and** `lib/derive.sh` both readable) decides whether what we have is usable. If not, `bootstrap()` fetches the repo and `exec`s the copy inside it. Four cases, all tested:
 
-- **already a checkout at `$DOTFILES_DIR`** — `git pull --ff-only`, non-fatal (local edits, a diverged branch or no network are all reasons to use what's there, not to refuse to install);
+- **already a checkout at `$DOTFILES_DIR`** — refresh it in place and install from it; never re-clone over it. With a `.git` and a usable git that is `git pull --ff-only`; with the `.dotfiles-tarball` stamp (below) it is a refetch of the tarball; with neither it is a NOTE and the checkout is used exactly as it stands. Every branch is non-fatal — local edits, a diverged branch or no network are all reasons to use what's there, not to refuse to install;
 - **absent or empty** — full `git clone` (not `--depth 1`: this is a repo you commit to, and every machine starting shallow just means unshallowing later);
-- **no git** — codeload tarball, `--strip-components 1`. Still a usable checkout, just not a git one. git is itself in the tools catalogue;
+- **no git** — codeload tarball, `--strip-components 1`, plus a `.dotfiles-tarball` stamp in the result. Still a usable checkout, just not a git one. git is itself in the tools catalogue;
 - **non-empty and not ours** — refuse, exit 1, touch nothing.
+
+The stamp is the whole reason a non-git checkout can be refreshed at all: re-extracting an archive over a directory is only safe when every file in it is known to be ours, and a `.git`-less directory somebody assembled by hand is not that. It is written by `fetch_tarball()`, which is also the create path, so the two can't disagree.
 
 Overridable by env: `DOTFILES_DIR`, `DOTFILES_SLUG`, `DOTFILES_BRANCH`, `DOTFILES_REPO`, `DOTFILES_TARBALL`.
 
@@ -62,7 +65,7 @@ The clone is over HTTPS, since a fresh machine has no SSH key. That's fine for p
 
 Two things about that install are deliberate:
 
-- **`INSTALLER_NO_MODIFY_PATH=1`.** Left alone, the astral installer appends its PATH line to `~/.bashrc` *and* `~/.profile` — and on a machine this repo has already installed, `~/.profile` is a symlink into the repo, so that edit would land in tracked dotfiles. install.sh persists the PATH itself instead, writing `~/.config/dotfiles/uv-env.sh` (which `shell/bashrc_additions.sh` sources) with uv's actual install dir. With `NO_MODIFY_PATH` the installer also skips writing its own `~/.local/bin/env`, which is why `uv-env.sh` does the `case`-guarded export itself and only sources that file `[ -f ]`.
+- **`INSTALLER_NO_MODIFY_PATH=1`.** Left alone, the astral installer appends its PATH line to `~/.bashrc` *and* `~/.profile` — and on a machine this repo has already installed, `~/.profile` is a symlink into the repo, so that edit would land in tracked dotfiles. install.sh persists the PATH itself instead, writing `~/.config/dotfiles/uv-env.sh` (which `shell/shellrc_additions.sh` sources) with uv's actual install dir. With `NO_MODIFY_PATH` the installer also skips writing its own `~/.local/bin/env`, which is why `uv-env.sh` does the `case`-guarded export itself and only sources that file `[ -f ]`.
 - **Never fatal.** No curl, no network, install fails → a NOTE and the run continues; `HAVE_UV=0` then routes the wizard to the text fallback, so an offline machine can still be set up. Same for `--skip-uv`.
 
 `run_tui()` passes the current answers in the environment and gets a theme.env-format fragment back on `--out`, which install.sh sources. Exit 0 = confirmed, 10 = the user quit (install aborts), anything else = the UI could not run (fall back to `text_wizard`, the original prompt loop, kept for exactly this). Textual needs a real terminal on fd 0 *and* 1, hence the `/dev/tty` redirect for the `curl | bash` case.
@@ -128,7 +131,7 @@ Answers are one `TOOL_<ID>=0|1` per catalogue entry in theme.env, appended by `t
 
 Three things each installer is careful about, all the same hazard: `rustup` gets `--no-modify-path`, `fzf` gets `--no-update-rc`, and uv gets `UV_NO_MODIFY_PATH` — left alone all three append to `~/.profile`, which **on an already-installed machine is a symlink into this repo**, so the edit would land in tracked dotfiles. `install_lazyvim()` refuses to touch a `~/.config/nvim` that already has files in it and returns 2, which the orchestrator prints as "left alone" rather than counting as a failure. Nothing in the phase is ever fatal: a failed tool is recorded and the run continues.
 
-PATH goes out two ways. Permanently through `~/.config/dotfiles/tools-env.sh` (written by `tools_write_env()`, sourced by `bashrc_additions.sh` — same shape as `uv-env.sh`, and the reason Homebrew gets a full `brew shellenv` rather than just its bin dir). And for the terminal the install ran in, `print_path_hint()` prints a copy-paste `export PATH=...`, compared against `TOOLS_ORIG_PATH` — the PATH as it was when the phase *started*, because `install_rust()` and `install_neovim()` prepend to install.sh's own PATH so later steps can use what they just installed, and checking the live one would report every such directory as already handled.
+PATH goes out two ways. Permanently through `~/.config/dotfiles/tools-env.sh` (written by `tools_write_env()`, sourced by `shellrc_additions.sh` — same shape as `uv-env.sh`, and the reason Homebrew gets a full `brew shellenv` rather than just its bin dir). And for the terminal the install ran in, `print_path_hint()` prints a copy-paste `export PATH=...`, compared against `TOOLS_ORIG_PATH` — the PATH as it was when the phase *started*, because `install_rust()` and `install_neovim()` prepend to install.sh's own PATH so later steps can use what they just installed, and checking the live one would report every such directory as already handled.
 
 **`PREVIEW_TOOLS` (`ohmyposh`, `jq`) are installed *before* the wizard opens**, by `install_preview_prereqs()`. The preview panes are the real prompt and the real Claude status line; without oh-my-posh the prompt pane is a hand-drawn approximation and without jq the Claude pane is the string "needs jq on PATH", which is exactly what the whole previews-are-real design exists to avoid. Two rules make that pre-pass safe: it **never prompts** (a machine needing a sudo password is treated as unprivileged for the duration, since both tools have userland routes — being asked for a password before the first question is a poor greeting), and a failure is silent and harmless, just restoring the old fallbacks. It also puts `~/.local/bin` on PATH, since the UI is a child process that inherits it.
 
@@ -168,7 +171,71 @@ The BSD-userland traps that were actually hit, all of which had a GNU-only spell
 
 **Login shells.** bash reads the first of `~/.bash_profile`, `~/.bash_login`, `~/.profile` that exists and stops. This repo symlinks `~/.profile`, so a pre-existing `~/.bash_profile` shadows the entire install — and Terminal.app opens a *login* shell for every window, where a Linux terminal usually opens an interactive non-login one that reads `~/.bashrc` directly. install.sh appends a marked block sourcing `~/.bashrc` to `~/.bash_profile`, but **only when that file already exists**: creating one would take `~/.profile` out of the chain rather than put it in. `reset.sh` strips both blocks.
 
+**Which login shell**, separately from which bash. macOS has logged people into **zsh** since Catalina, so on a Mac none of `~/.bashrc`, `~/.bash_profile` or `~/.profile` is read at all — see "Two shells" below, which is the other half of this section.
+
 To check a change here, there is no macOS in CI, so build the shell instead — `bash-3.2.57` from ftp.gnu.org compiles in about a minute (`./configure --build=<host-triple> --without-bash-malloc CFLAGS="-Wno-implicit-function-declaration -std=gnu89"`; its `config.guess` is too old to recognise aarch64 unaided). `bash -n` is *not* enough: `${1,,}` and `mapfile` are runtime failures, not parse errors. Run the real entry points. `uname` is read once into `OS_KERNEL`, so a stub `uname` early on PATH is all it takes to exercise the Darwin routes on Linux.
+
+## Two shells: bash and zsh
+
+The other thing a brand-new machine varies in, and the one that used to make an
+install on a Mac look like it had done nothing at all: **zsh reads none of the
+files this repo wires**. Not `~/.bashrc`, not `~/.profile`, not
+`~/.bash_profile`. Everything installed correctly and no shell ever loaded it.
+
+**One file, not two.** `shell/shellrc_additions.sh` is sourced from `~/.bashrc`
+*and* `~/.zshrc`, and works out which shell is reading it from `$ZSH_VERSION` /
+`$BASH_VERSION` (not `$SHELL`, which is the *login* shell and says nothing about
+the shell you are in; not `$0`, which is `-zsh`/`zsh`/`bash`/`-bash` depending
+on how it was started). A second copy for zsh would drift within a month. Only
+these genuinely differ, and each branches:
+
+| | bash | zsh |
+| --- | --- | --- |
+| prompt | `oh-my-posh init bash` | `oh-my-posh init zsh` |
+| `cd` | `zoxide init bash` | `zoxide init zsh` |
+| history on ↑ | `bind '"\e[A": history-search-backward'` | `bindkey '^[[A' history-beginning-search-backward` |
+| fzf | `~/.fzf.bash` | `~/.fzf.zsh` |
+| completion | the distro's | `compinit`, or there is none at all |
+| nvm | `$NVM_DIR/bash_completion` | skipped — it calls `complete` |
+
+Two of those have a detail worth keeping. zsh's `history-search-*` widgets are
+**not** the counterpart of bash's — `history-beginning-search-*` are; and both
+`^[[A` *and* `^[OA` are bound, because a terminal left in application cursor
+mode (which is what tmux and every full-screen TUI leave behind) sends the
+latter. `compinit` runs with `-u` and its own dump under `$XDG_CACHE_HOME`, and
+only when `compdef` is undefined: with a framework already loaded it would be a
+second run, and without `-u` a group-writable completion dir — the norm on any
+shared machine — makes zsh ask a question at every single login.
+
+**Which rc files get the line** is decided by `login_shell_name()` and the
+`case "$SHELL_TARGET"` beside it in install.sh: bash always (it is everywhere, and `bash` typed inside
+zsh should still get the prompt), zsh when it is the login shell or a
+`~/.zshrc` already exists. A zsh merely *installed* does not count — it sits
+unused on most Linux boxes. `--shell bash|zsh|both` forces it. `login_shell_name()`
+reads `$SHELL` first and falls back to the passwd database (`dscl` on macOS,
+`getent` elsewhere) — both lookups need `|| true`, or a machine without them
+fails the assignment under `set -o pipefail` and takes the install down.
+
+Creating a missing `~/.zshrc` is safe, unlike creating a `~/.bash_profile`:
+zsh reads `~/.zshenv`, `~/.zprofile`, `~/.zshrc` and `~/.zlogin` in turn and
+none shadows another, so there is no chain to break. `~/.zshrc` alone is also
+enough — zsh reads it for every *interactive* shell, login or not, where bash
+splits that job between `~/.bashrc` and `~/.profile`.
+
+**The block is refreshed, not just appended.** `rc_wire()` strips a block whose
+`source` line points somewhere else (the checkout moved) and, before that, any
+block under the older `# >>> dotfiles bashrc_additions >>>` marker, which is
+what a machine set up before the rename has. `shell/bashrc_additions.sh` still
+exists as a four-line redirect for exactly the window between "this is pushed"
+and "install.sh has been re-run there" — without it, every new shell on those
+machines opens with a `No such file or directory` and no PATH.
+
+To check a change here without a Mac: `apt-get download zsh zsh-common`
+(no root needed), `dpkg-deb -x` both somewhere, and run
+`<there>/bin/zsh -i -c '...'` with `HOME` pointed at a throwaway directory that
+install.sh has been run against. The extracted zsh needs `module_path` and
+`fpath` set in that `HOME`'s `.zshenv` to find its own modules, or every
+`bindkey` fails for a reason that has nothing to do with this repo.
 
 ## The hsl login autostart
 
@@ -176,19 +243,21 @@ To check a change here, there is no macOS in CI, so build the shell instead — 
 
 - it is **sourced**, never executed, so every exit path is `return` — an `exit` would close the login shell;
 - `hsl` is **run, not `exec`ed**, so quitting herdr drops you into a normal shell rather than ending the session;
-- `NO_HSL=1` is the escape hatch (`NO_HSL=1 bash -l`), checked before anything else;
-- `DOTFILES_HSL_STARTED` (exported) makes it once-per-login — `~/.bashrc` gets re-sourced constantly, not least by this repo's own `rebash` alias, and each of those would otherwise stack another herdr;
-- it bails on: a non-interactive shell (`case $- in *i*`), `SSH_ORIGINAL_COMMAND` (scp/rsync break outright if a login shell writes to stdout), **being inside herdr already** (`HERDR_ENV`/`HERDR_PANE_ID`/`HERDR_SOCKET_PATH`/`HERDR_WORKSPACE_ID` — every pane herdr spawns runs `~/.bashrc`, so without this the first thing a new pane does is start a second herdr inside itself), `TMUX`, an agent shell (`CLAUDECODE`/`AI_AGENT`), no tty on both ends, `TERM=dumb`, and `hsl` not being on PATH at all.
+- `NO_HSL=1` is the escape hatch (`NO_HSL=1 bash -l`, or `zsh -l`), checked before anything else;
+- `DOTFILES_HSL_STARTED` (exported) makes it once-per-login — the shell rc gets re-sourced constantly, not least by this repo's own `rebash` alias, and each of those would otherwise stack another herdr;
+- it bails on: a non-interactive shell (`case $- in *i*`), `SSH_ORIGINAL_COMMAND` (scp/rsync break outright if a login shell writes to stdout), **being inside herdr already** (`HERDR_ENV`/`HERDR_PANE_ID`/`HERDR_SOCKET_PATH`/`HERDR_WORKSPACE_ID` — every pane herdr spawns runs the shell rc, so without this the first thing a new pane does is start a second herdr inside itself), `TMUX`, an agent shell (`CLAUDECODE`/`AI_AGENT`), no tty on both ends, `TERM=dumb`, and `hsl` not being on PATH at all.
 
-The answer is baked in at render time rather than re-read per shell, so "off" is a file that returns on its second line. It is sourced from the **very end** of `bashrc_additions.sh`: when it does start herdr it blocks until you quit, so anything after that line would not run until then.
+The answer is baked in at render time rather than re-read per shell, so "off" is a file that returns on its second line. It is sourced from the **very end** of `shellrc_additions.sh`: when it does start herdr it blocks until you quit, so anything after that line would not run until then.
 
 `hsl` itself ships with the herdr-statusline plugin (it is a generated launcher — do **not** put it in `bin/`), which is a separate answer, so it can legitimately be absent; install.sh prints a NOTE for that combination rather than failing.
 
 ## Backup + reset
 
-`link()` and `copy()` (install.sh's plumbing helpers) back up any real, non-symlink file already at a destination as `<file>.bak` before taking it over — but only the first time: on a later run the destination is already a symlink (or, for `copy()`, already listed in the *previous* run's manifest), so the `.bak` is never overwritten by our own output. Every destination either helper touches is recorded in `MANAGED` and written out fresh each run to `~/.config/dotfiles/manifest.txt`.
+`link()` and `copy()` (install.sh's plumbing helpers) back up any real, non-symlink file already at a destination as `<file>.bak` before taking it over — but only the first time: on a later run the destination is already a symlink (or, for `copy()`, byte-identical to what we are about to write, or already listed in the *previous* run's manifest), so the `.bak` is never overwritten by our own output. Every destination either helper touches is recorded in `MANAGED` and written out fresh each run to `~/.config/dotfiles/manifest.txt`.
 
-`reset.sh` reads that manifest and undoes it: removes every path on it, restores `<file>.bak` wherever one exists, strips the `bashrc_additions` block from `~/.bashrc`, and best-effort unlinks the `herdr-workspace-prefix` plugin. Paths with no `.bak` (there was nothing there before install.sh) are just removed. `theme.env` and `.generated/` are deliberately left alone — reset undoes *installation*, not the saved colour/machine/toggle answers.
+**A backup is only ever created, never written over.** `backup_name()` is the single place that decides where one goes: `<file>.bak` when that name is free, otherwise `<file>.bak.2`, `.bak.3`, … The case that makes this necessary is a real file turning up at a path we already took over once — somebody deleted our symlink and wrote their own `~/.tmux.conf` — where the old `mv "$dst" "$dst.bak"` would have destroyed the machine's *original* file, the one thing reset.sh needs. reset.sh restores the plain `.bak` (the original, by construction) and reports the numbered ones without touching them: choosing between several saved files is a human's job.
+
+`reset.sh` reads that manifest and undoes it: removes every path on it, restores `<file>.bak` wherever one exists, strips the additions block from `~/.bashrc` and `~/.zshrc` (both the current marker and the older `bashrc_additions` spelling), and best-effort unlinks the `herdr-workspace-prefix` plugin. Paths with no `.bak` (there was nothing there before install.sh) are just removed. `theme.env` and `.generated/` are deliberately left alone — reset undoes *installation*, not the saved colour/machine/toggle answers.
 
 ## Architecture: templates + `.generated/`
 
@@ -237,7 +306,8 @@ In the setup UI these are checkboxes with the GPU-temperature one disabled while
 - `lib/` — `derive.sh` and `tools.sh`, both described above. Sourced by install.sh, executed by the setup UI.
 - `tui/` — `configure.py`, the Textual setup UI. A PEP 723 uv script: dependencies live in its header, capped at the tested Textual major so a breaking release cannot break setting up a machine.
 - `shell/` — layered on top of each machine's own `.bashrc`/`.profile`, not a replacement for them:
-  - `bashrc_additions.sh` — aliases, PATH, oh-my-posh/zoxide/fzf init, tmux auto-attach, env vars. Sourced from the tail of `~/.bashrc` via one `source` line that `install.sh` appends, guarded by a marker comment (idempotent).
+  - `shellrc_additions.sh` — aliases, PATH, oh-my-posh/zoxide/fzf init, key bindings, env vars. **One file for bash and zsh** (see "Two shells" above). Sourced from the tail of `~/.bashrc` and `~/.zshrc` via one `source` line that `install.sh` appends to each, guarded by a marker comment (idempotent).
+  - `bashrc_additions.sh` — a redirect to the above, nothing else. Only there so a machine whose `~/.bashrc` still names the old path keeps working until install.sh is re-run on it; deletable once every machine has had a run.
   - `bashrc_functions` — shell functions (currently `syncop`, a generic rsync-between-machines helper).
   - `profile` — symlinked directly to `~/.profile`.
 - `bin/` — binaries/scripts install.sh plain-copies (not symlinks, not templated) into `~/.local/bin`. Currently a scaffold (just `.gitkeep`); drop files in to have them installed. Note `~/.local/bin/hsl` is *not* a candidate: herdr-statusline generates that launcher itself.
