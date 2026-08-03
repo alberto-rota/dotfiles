@@ -121,7 +121,9 @@ In `password` mode nothing prompts until a privileged command is actually needed
 
 A route may also come back with the method `na`, which means *there was never anything to do here* — Homebrew on a machine that needs nothing from it, `nvtop` on a Mac. Both the plan and the run report that as a skip rather than as a machine that fell short, which is the distinction an empty method (genuinely blocked) carries.
 
-**Homebrew is bootstrapped only when it is the sole remaining route** to something actually selected (`brew_needed()`) — a ~1GB install is not worth doing on spec. On Linux that means `nvtop` with no apt, or eza/fd/bat/delta with no apt *and* no cargo coming. On macOS it means git or Tailscale, neither of which has any other route at all. glow and neovim never count towards it on either: their release tarballs work everywhere.
+**Homebrew is bootstrapped only when it is the sole remaining route** to something actually selected (`brew_needed()`) — a ~1GB install is not worth doing on spec. On Linux that means `nvtop` with no apt, or eza/fd/bat/delta with no apt *and* no cargo coming. On macOS it means git or Tailscale, neither of which has any other route at all. **`tmux` is the one entry that counts on both**, for the reason in its route below. glow and neovim never count towards it on either: their release tarballs work everywhere. The tests there are `tool_selected`/`tool_present`, never `tool_route` — the routes ask `brew_needed()` themselves, so that would recurse.
+
+**`tmux` is apt, Homebrew, or a clear no** — the one tool whose config this repo cares about most and the one with no userland route at all. Upstream ships source only, and building it wants libevent and ncurses headers, which is the whole problem `buildtools` exists to sidestep; the static builds on GitHub are third-party and version-lagging, not something to put on every machine on this repo's authority. macOS is not exempt — it ships `screen`, not tmux — so brew is the answer there rather than "already present". In practice the machines that hit the blocked case (HPC login nodes) are also the ones that came with tmux.
 
 Ordering is the array order of `TOOL_META`, which is topological — a tool may only depend on one listed above it. `tool_deps()` holds only the hard ones (LazyVim needs neovim; both herdr plugins need herdr). bat/delta/glow are deliberately *not* dependencies of `herdr-file-viewer`: it installs and runs fine without them and just falls back to plain text.
 
@@ -319,7 +321,7 @@ In the setup UI these are checkboxes with the GPU-temperature one disabled while
 
 ## Layout
 
-- `tmux/` — `.tmux.conf.in` plus the two scripts its status bar shells out to: `other-sessions.sh` (session list), `slurm-status.sh` (Slurm job status, degrades gracefully without `squeue`).
+- `tmux/` — `.tmux.conf.in` plus the two scripts its status bar shells out to: `other-sessions.sh` (session list), `slurm-status.sh` (Slurm job status, degrades gracefully without `squeue`). tmux itself is in the tools catalogue (`shell` group); the config is rendered and linked either way, since a machine can be set up before the binary arrives.
 - `claude/` — Claude Code **global** `settings.json`, `keybindings.json`, `statusline-command.sh.in`, and custom themes (`themes/*.json(.in)`). Per-project Claude settings (`settings.local.json`, project `.claude/` dirs) are intentionally not synced here. The status line's five bubbles used to be a fixed palette of their own; they are now the primary→secondary ramp (`claude_ramp()` in `lib/derive.sh`), so it is templated like everything else.
 - `herdr/` — `config.toml.in` (keybindings, sidebar rows, theme overrides) plus plugin configs under `herdr/plugins/*`. Plugin *code* is not synced/tracked as an installed plugin — see below.
 - `oh-my-posh/` — `albe-monokai2.omp.json.in`, the active prompt theme.

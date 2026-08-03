@@ -199,6 +199,7 @@ TOOL_META=(
   "git|git|providers"
   "buildtools|C toolchain (if needed)|providers"
   "rust|Rust toolchain (cargo)|providers"
+  "tmux|tmux|shell"
   "ohmyposh|oh-my-posh|shell"
   "jq|jq (JSON)|shell"
   "zoxide|zoxide (smarter cd)|shell"
@@ -378,6 +379,7 @@ tool_present() {
     # with gcc, or with clang and no cc, already satisfies this and must not be
     # sent to apt for build-essential it does not need.
     buildtools)    have_cc ;;
+    tmux)          have tmux ;;
     brew)          have brew || brew_prefix >/dev/null 2>&1 ;;
     ohmyposh)      have oh-my-posh ;;
     jq)            have jq ;;
@@ -535,6 +537,11 @@ brew_needed() {
   [ "$AVAIL_BREW" = 1 ] && return 1
   [ "$AVAIL_APT" = 1 ] && return 1     # apt covers everything brew would
   local id
+  # tmux is the one entry that counts on BOTH platforms: upstream ships source
+  # only, so with apt out there is no route to it anywhere except Homebrew --
+  # and macOS ships screen, not tmux. tool_selected/tool_present rather than
+  # tool_route, which would recurse straight back into here.
+  if tool_selected tmux && ! tool_present tmux; then return 0; fi
   if is_mac; then
     # There is no apt to fall back to here, so brew is the system route and
     # these two have no other one at all: git ships with the Xcode Command Line
@@ -609,6 +616,19 @@ tool_route() {
               elif ! have_git; then echo "|needs git to clone Homebrew with"
               elif is_mac; then echo "git|~/homebrew (no admin: builds from source)"
               else echo "git|~/.linuxbrew (sole route to something selected)"; fi ;;
+    # The one tool here whose config this repo cares about most and which has no
+    # userland route at all: upstream ships source only (a build wants libevent
+    # and ncurses headers, i.e. the whole problem buildtools exists to dodge),
+    # and the static builds floating around GitHub are third-party and version-
+    # lagging -- not something to put on every machine on this repo's authority.
+    # So apt, Homebrew, or a clear no. macOS does NOT ship tmux (it ships
+    # screen), which is why brew is the mac answer rather than "already there".
+    # In practice the machines that hit the blocked case -- HPC login nodes --
+    # are also the ones that came with tmux.
+    tmux)     if [ "$AVAIL_APT" = 1 ]; then echo "apt|tmux"
+              elif [ "$AVAIL_BREW" = 1 ] || brew_needed; then echo "brew|tmux"
+              elif is_mac; then echo "|needs Homebrew"
+              else echo "|needs apt or Homebrew"; fi ;;
     ohmyposh) echo "binary|oh-my-posh release -> ~/.local/bin" ;;
     jq)       if [ "$AVAIL_APT" = 1 ]; then echo "apt|jq"
               else echo "binary|jqlang/jq -> ~/.local/bin"; fi ;;
@@ -996,6 +1016,15 @@ install_nvtop() {
   case "${route%%|*}" in
     apt)  apt_install nvtop ;;
     brew) brew_install nvtop ;;
+    *)    return 1 ;;
+  esac
+}
+
+install_tmux() {
+  local route; route="$(tool_route tmux)"
+  case "${route%%|*}" in
+    apt)  apt_install tmux ;;
+    brew) brew_install tmux ;;
     *)    return 1 ;;
   esac
 }
