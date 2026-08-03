@@ -3,8 +3,17 @@
 #>> Edit THIS file, not ~/.tmux/slurm-status.sh. #>> lines are stripped.
 
 # Fetching jobs: %j is name, %t is state
-# head -n 3 keeps the bar from getting too long
+# head -n 16 keeps the bar from getting too long
 JOBS=$(squeue --me --noheader --format="%j|%t" 2>/dev/null | head -n 16)
+
+# Job state is the one thing in either bar that is NOT accent-coloured, and
+# deliberately: "which of my jobs are actually running" has to read the same on
+# every machine whatever primary is set, the way a traffic light does. Both are
+# palette hexes (monokai green / yellow) so they still sit with everything else,
+# and both are drawn as FOREGROUND on black here -- the "light enough to take
+# black text" rule that governs the accents does not apply to them.
+RUN_FG="#a6e22e"     # R  -- running
+QUEUE_FG="#ffd866"   # PD -- pending, i.e. sitting in the queue
 
 if [ -z "$JOBS" ]; then
     echo "" #[fg=#555555,bg=#000000]"
@@ -16,10 +25,13 @@ while IFS='|' read -r name state; do
     # Truncate job name to 7 characters
     short_name=$(echo "$name" | cut -c1-7)
     
+    # These two branches used to be byte-identical -- both @PRIMARY@ -- so a
+    # queued job and a running one looked exactly the same, and the bar answered
+    # the one question it exists to answer with "some jobs".
     if [ "$state" == "R" ]; then
-        OUTPUT+="#[fg=#000000,bg=@PRIMARY@]#[fg=@PRIMARY@,bg=#000000] $short_name "
+        OUTPUT+="#[fg=#000000,bg=$RUN_FG]#[fg=$RUN_FG,bg=#000000] $short_name "
     elif [ "$state" == "PD" ]; then
-        OUTPUT+="#[fg=#000000,bg=@PRIMARY@]#[fg=@PRIMARY@,bg=#000000] $short_name "
+        OUTPUT+="#[fg=#000000,bg=$QUEUE_FG]#[fg=$QUEUE_FG,bg=#000000] $short_name "
     fi
 done <<< "$JOBS"
 

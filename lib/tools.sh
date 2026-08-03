@@ -563,6 +563,29 @@ brew_needed() {
   return 1
 }
 
+# ...and whether it CAN be. brew_needed() answers "is Homebrew wanted", which is
+# a different question from "will it be here", and the brew row resolves the
+# second one two branches further down: the installer needs admin on macOS, and
+# every other route is a git clone of Homebrew's own repo. On a bare Mac -- no
+# admin, and a /usr/bin/git that is only a shim -- "wanted" was yes while the
+# brew row itself was blocked, so six routes advertised a Homebrew install the
+# run could never perform. Mirrors those branches deliberately; if one moves,
+# this moves with it.
+brew_obtainable() {
+  is_mac && priv_available && return 0   # the official installer brings the CLT
+  have_git                               # otherwise: something to clone with
+}
+
+# The question every route that falls back to Homebrew actually wants answered.
+# AVAIL_BREW alone is not it either: brew is the FIRST catalogue entry, so a walk
+# that is going to install it has already flipped the flag by the time anything
+# else is resolved -- but a route asked outside that order (install_nvtop() and
+# install_tmux() re-resolve their own) still needs the honest answer.
+brew_coming() {
+  [ "$AVAIL_BREW" = 1 ] && return 0
+  brew_needed && brew_obtainable
+}
+
 # --- route resolution -----------------------------------------------------
 # One decision point, used by both --plan and install_tools(). Prints
 # "method|detail". An empty method means there is no route on this machine; the
@@ -626,7 +649,7 @@ tool_route() {
     # In practice the machines that hit the blocked case -- HPC login nodes --
     # are also the ones that came with tmux.
     tmux)     if [ "$AVAIL_APT" = 1 ]; then echo "apt|tmux"
-              elif [ "$AVAIL_BREW" = 1 ] || brew_needed; then echo "brew|tmux"
+              elif brew_coming; then echo "brew|tmux"
               elif is_mac; then echo "|needs Homebrew"
               else echo "|needs apt or Homebrew"; fi ;;
     ohmyposh) echo "binary|oh-my-posh release -> ~/.local/bin" ;;
@@ -647,7 +670,7 @@ tool_route() {
     # nvtop formula for darwin, and nvidia-smi is what the tool wraps.
     nvtop)    if is_mac; then echo "na|no NVIDIA GPUs on macOS"
               elif [ "$AVAIL_APT" = 1 ]; then echo "apt|nvtop"
-              elif [ "$AVAIL_BREW" = 1 ] || brew_needed; then echo "brew|nvtop"
+              elif brew_coming; then echo "brew|nvtop"
               else echo "|needs apt or Homebrew"; fi ;;
     # apt's neovim is 0.9.5 on 24.04, which LazyVim will start on and then warn
     # about forever. The official tarball is current, needs no privilege, and
@@ -702,13 +725,13 @@ _route_system_or_cargo() {
   if is_mac; then
     if [ "$AVAIL_BREW" = 1 ]; then echo "brew|$formula"
     elif cargo_usable; then echo "cargo|$crate"
-    elif brew_needed; then echo "brew|$formula"
+    elif brew_coming; then echo "brew|$formula"
     else echo "|needs $lack or Homebrew"; fi
     return
   fi
   if [ "$AVAIL_APT" = 1 ]; then echo "apt|$apt_pkg"
   elif cargo_usable; then echo "cargo|$crate"
-  elif [ "$AVAIL_BREW" = 1 ] || brew_needed; then echo "brew|$formula"
+  elif brew_coming; then echo "brew|$formula"
   else echo "|needs apt, $lack or Homebrew"; fi
 }
 

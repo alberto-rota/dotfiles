@@ -1,6 +1,20 @@
 #>> TEMPLATE -- rendered by install.sh with @PRIMARY@ / @PRIMARY_DIM@ substituted.
 #>> Edit THIS file, not the rendered config. #>> lines are stripped.
 
+#>> [keys] comes BEFORE the [[keys.command]] blocks on purpose: those implicitly
+#>> create the `keys` table, and declaring the super-table after its own
+#>> array-of-tables is the one TOML ordering that is not clearly legal.
+#>>
+#>> herdr's own default binds prefix+j to focus_pane_down, and prefix+j is what
+#>> the tmux side uses for the Slurm popup (tmux/.tmux.conf.in) -- the same
+#>> muscle memory has to work in both. Moving the default out of the way is
+#>> deliberate rather than trusting whichever of the two bindings wins: nothing
+#>> documents that precedence, and a popup that silently does not open is worse
+#>> than a nav key that moved. Pane-down focus is unaffected in navigate mode,
+#>> which has its own prefix-less `j`.
+[keys]
+focus_pane_down = "prefix+shift+j"
+
 [[keys.command]]
 key = "prefix+f"
 type = "plugin_action"
@@ -12,6 +26,26 @@ key = "prefix+shift+f"
 type = "plugin_action"
 command = "herdr-file-viewer.open-file-viewer-tab"
 description = "open file viewer in tab"
+
+#>> The herdr half of tmux's `bind j display-popup -w 95% -h 85%` -- same key,
+#>> same size, so the Slurm popup is one gesture in both. type = "popup" is a
+#>> session-modal terminal that leaves the tab layout alone (vs "pane", which
+#>> splits, and "shell", which detaches with no terminal at all).
+#>>
+#>> The command is bin/jwatch, not the watch pipeline spelled out here, for two
+#>> reasons. It is the same script tmux's popup can run, so the two cannot drift
+#>> apart. And herdr spawns this through portable_pty, documenting only that
+#>> *Windows* runs the string through cmd.exe /d /c -- nothing promises a POSIX
+#>> host gets a shell, so a compound `a; b` string is not safe to hand it, while
+#>> a single executable always is. jwatch itself handles the machines where
+#>> jqueue/jruns do not exist (i.e. anything that is not the cluster).
+[[keys.command]]
+key = "prefix+j"
+type = "popup"
+command = "jwatch"
+width = "95%"
+height = "85%"
+description = "slurm queue + running jobs"
 
 [ui.toast]
 delivery = "herdr"
