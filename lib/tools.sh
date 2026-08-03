@@ -210,6 +210,7 @@ TOOL_META=(
   "nvtop|nvtop (GPU monitor)|gpu"
   "neovim|Neovim|editor"
   "lazyvim|LazyVim starter|editor"
+  "claude|Claude Code|editor"
   "gdown|gdown|python"
   "groundcontrol|ground-control-tui|python"
   "nvitop|nvitop|gpu"
@@ -244,10 +245,18 @@ tool_group() { _tool_meta "$1" group; }
 # Only the hard ones: a dependency here means "cannot be installed before".
 # bat/delta/glow are deliberately not listed under herdr_file_viewer because the
 # plugin installs and runs fine without them -- it just falls back to plain text.
+#
+# herdr_statusline needs rust as well as herdr, and that one is not guesswork:
+# its herdr-plugin.toml declares a build step (`sh scripts/build.sh`) which
+# compiles hsl-config with `cargo build --release --locked` and only then
+# installs the ~/.local/bin/hsl launcher. Without cargo the build exits 1, the
+# plugin is not installed at all, and -- since install_tools() swallows each
+# installer's output -- the whole explanation was one unattributed "FAILED".
 tool_deps() {
   case "$1" in
     lazyvim) echo "neovim git" ;;
-    herdr_statusline|herdr_file_viewer) echo "herdr" ;;
+    herdr_statusline) echo "herdr rust" ;;
+    herdr_file_viewer) echo "herdr" ;;
   esac
 }
 
@@ -328,6 +337,10 @@ tool_present() {
     # The starter drops an init.lua in; anything else already there is somebody
     # else's config and install_lazyvim() will refuse to touch it.
     lazyvim)       [ -e "$LAZYVIM_DIR/init.lua" ] ;;
+    # The native build symlinks ~/.local/bin/claude at the versioned binary
+    # under ~/.local/share/claude/versions, so the launcher is the thing to
+    # look for -- an update swaps what it points at, not where it lives.
+    claude)        have claude || [ -x "$HOME/.local/bin/claude" ] ;;
     gdown)         have gdown ;;
     groundcontrol) have groundcontrol || have gc ;;
     nvitop)        have nvitop ;;
@@ -515,10 +528,22 @@ tool_route() {
     neovim)   echo "tarball|neovim stable -> ~/.local/nvim" ;;
     lazyvim)  if [ "$AVAIL_GIT" = 1 ]; then echo "git|LazyVim/starter -> $LAZYVIM_DIR"
               else echo "|needs git"; fi ;;
+    # One route on both platforms: the native installer detects darwin/linux and
+    # arm64/x64 itself, lands everything under $HOME (a versioned binary in
+    # ~/.local/share/claude plus the ~/.local/bin/claude symlink), and needs no
+    # privilege and no node. Unlike rustup, fzf and uv it writes to no shell rc,
+    # so there is no --no-modify-path to pass: nothing here can land in the
+    # tracked ~/.profile symlink.
+    claude)   echo "script|claude.ai/install.sh -> ~/.local/bin" ;;
     gdown|groundcontrol|nvitop)
               if [ "$AVAIL_UV" = 1 ]; then echo "uv|uv tool install $(_pypi_name "$1")"
               else echo "|needs uv"; fi ;;
-    herdr_statusline)  echo "plugin|iiii1224/herdr-statusline" ;;
+    # The plugin's own herdr-plugin.toml is `platforms = ["linux"]`, so on macOS
+    # there is nothing to install rather than something that failed -- and it
+    # wraps tmux around a herdr session to draw a status line, which is a Linux
+    # box's idea of a login shell anyway. na, not an empty method.
+    herdr_statusline)  if is_mac; then echo "na|linux only (plugin manifest)"
+                       else echo "plugin|iiii1224/herdr-statusline"; fi ;;
     herdr_file_viewer) echo "plugin|smarzban/herdr-file-viewer" ;;
     *) echo "|unknown tool" ;;
   esac
@@ -888,12 +913,31 @@ install_lazyvim() {
   rm -rf "$LAZYVIM_DIR/.git"
 }
 
+install_claude() {
+  mkdir -p "$HOME/.local/bin"
+  # `| bash`, not `sh`: the installer's shebang is bash and it uses [[ ]].
+  curl -fsSL https://claude.ai/install.sh | bash >/dev/null 2>&1 || return 1
+  note_path "$HOME/.local/bin"
+  tool_present claude
+}
+
 install_gdown()         { uv_install gdown; }
 install_groundcontrol() { uv_install ground-control-tui; }
 install_nvitop()        { uv_install nvitop; }
 
 _install_herdr_plugin() {
   have herdr || return 1
+  # herdr runs each plugin's build commands as a child of this shell, so what is
+  # on PATH here is what the build gets. herdr-statusline's build.sh is a
+  # `cargo build`, and a rust installed by an EARLIER run of this script leaves
+  # ~/.cargo/bin off the PATH of a non-login shell -- install_rust() only
+  # prepends it when it is the one doing the installing.
+  if [ -d "$HOME/.cargo/bin" ]; then
+    case ":$PATH:" in
+      *":$HOME/.cargo/bin:"*) ;;
+      *) PATH="$HOME/.cargo/bin:$PATH"; export PATH ;;
+    esac
+  fi
   herdr plugin install "$1" -y >/dev/null 2>&1
 }
 install_herdr_statusline()  { _install_herdr_plugin iiii1224/herdr-statusline; }
@@ -989,6 +1033,24 @@ install_tools() {
   priv_resolve
   providers_init
   TOOLS_ORIG_PATH="$PATH"
+  # AFTER the line above, deliberately: TOOLS_ORIG_PATH is the PATH as the phase
+  # found it, and print_path_hint() diffs against that precisely so a directory
+  # this phase puts on its own PATH is still reported to the calling shell.
+  #
+  # ~/.local/bin is where most of the userland routes land, and half a dozen
+  # installers finish by checking that what they just installed can be found --
+  # install_herdr() ends in `have herdr`, install_claude() in `tool_present
+  # claude`. On a bare machine that directory did not exist at login, so it is
+  # not on PATH (Debian's ~/.profile adds it only `if [ -d ]`), and every one of
+  # those checks says no about a tool that installed perfectly. herdr then
+  # "FAILED" and both herdr plugins SKIPPED on the dependency check behind it.
+  # install_preview_prereqs() already does this, but only on an interactive run;
+  # `-y`, --tools-only and the tty-less `curl | bash` never went through it.
+  mkdir -p "$HOME/.local/bin" 2>/dev/null || true
+  case ":$PATH:" in
+    *":$HOME/.local/bin:"*) ;;
+    *) PATH="$HOME/.local/bin:$PATH"; export PATH ;;
+  esac
   # A Homebrew that is installed but was never put on PATH is common (see
   # brew_prefix). Wire it up now so brew_install() can actually use it, and so
   # "brew: already installed" is a true statement rather than a dead end.
