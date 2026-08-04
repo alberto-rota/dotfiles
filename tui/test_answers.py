@@ -35,14 +35,14 @@ async def main():
 
     # a saved theme.env with two tools switched off
     env = {"PRIMARY": "#78dce8", "SECONDARY": "#ffd866", "MACHINE": "proxima",
-           "TOOL_NVTOP": "0", "TOOL_BREW": "0", "HSL_LOGIN": "1"}
+           "TOOL_NVITOP": "0", "TOOL_BREW": "0", "HSL_LOGIN": "1"}
     a = C.Answers.from_env(env, cat)
-    check("deselected tools round-trip in", set(a.tools_off) == {"brew", "nvtop"}, a.tools_off)
+    check("deselected tools round-trip in", set(a.tools_off) == {"brew", "nvitop"}, a.tools_off)
     check("as_env emits one key per tool",
           sum(1 for k in a.as_env() if k.startswith("TOOL_")) == N)
-    check("as_env marks the off ones 0", a.as_env()["TOOL_NVTOP"] == "0")
+    check("as_env marks the off ones 0", a.as_env()["TOOL_NVITOP"] == "0")
     check("as_env marks the on ones 1", a.as_env()["TOOL_EZA"] == "1")
-    check("as_shell writes them unquoted", "TOOL_NVTOP=0" in a.as_shell())
+    check("as_shell writes them unquoted", "TOOL_NVITOP=0" in a.as_shell())
     check("hsl_login reads in", a.hsl_login is True)
     check("hsl_login writes out", a.as_env()["HSL_LOGIN"] == "1")
     check("hsl_login defaults off", C.Answers().hsl_login is False)
@@ -69,16 +69,16 @@ async def main():
         await pilot.pause()
         boxes = {w.id: w for w in app.query(Checkbox) if w.id and w.id.startswith("tool-")}
         check("a checkbox per tool", len(boxes) == N, len(boxes))
-        check("nvtop unchecked", boxes["tool-nvtop"].value is False)
+        check("nvitop unchecked", boxes["tool-nvitop"].value is False)
         check("eza checked", boxes["tool-eza"].value is True)
 
         # toggle two and confirm the answers follow
         boxes["tool-eza"].value = False
-        boxes["tool-nvtop"].value = True
+        boxes["tool-nvitop"].value = True
         await pilot.pause()
         check("toggling off updates answers", "eza" in app.answers.tools_off,
               app.answers.tools_off)
-        check("toggling on updates answers", "nvtop" not in app.answers.tools_off,
+        check("toggling on updates answers", "nvitop" not in app.answers.tools_off,
               app.answers.tools_off)
         check("tools_off stays in catalogue order",
               list(app.answers.tools_off) == ["brew", "eza"], app.answers.tools_off)
@@ -126,7 +126,7 @@ async def main():
         await pilot.pause()
         text = out.read_text()
         check("written fragment has TOOL_EZA=0", "TOOL_EZA=0" in text)
-        check("written fragment has TOOL_NVTOP=1", "TOOL_NVTOP=1" in text)
+        check("written fragment has TOOL_NVITOP=1", "TOOL_NVITOP=1" in text)
         check("written fragment keeps colours", 'PRIMARY="#78dce8"' in text)
         check("written fragment has HSL_LOGIN=0", "HSL_LOGIN=0" in text)
 

@@ -122,7 +122,7 @@ and a tool added later switches itself on, since an absent answer means yes.
 |---|---|
 | shell | tmux, oh-my-posh, jq, zoxide, eza, fzf, fd, bat, delta, glow, dua-cli |
 | network | Tailscale |
-| gpu | nvtop, nvitop |
+| gpu | nvitop (`uv tool install`) |
 | editor | Neovim + LazyVim, Claude Code |
 | python | gdown, ground-control-tui (`uv tool install`) |
 | herdr | herdr, herdr-statusline, herdr-file-viewer |
@@ -176,9 +176,9 @@ move over.
 
 Linux and macOS both work from the same one-liner. On a Mac, Homebrew is the
 system package manager rather than a last resort, Tailscale comes from the
-formula and needs `sudo brew services start tailscale`, nvtop is skipped as *not
-applicable* rather than failed, and hostnames with apostrophes and spaces in them
-are cleaned up rather than rejected. Everything here runs under **bash 3.2**,
+formula and needs `sudo brew services start tailscale`, the herdr-statusline
+plugin is skipped as *not applicable* rather than failed, and hostnames with
+apostrophes and spaces in them are cleaned up rather than rejected. Everything here runs under **bash 3.2**,
 which is what `/bin/bash` is on macOS, so `curl … | bash` needs nothing installed
 first.
 

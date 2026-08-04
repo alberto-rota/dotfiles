@@ -9,11 +9,20 @@ JOBS=$(squeue --me --noheader --format="%j|%t" 2>/dev/null | head -n 16)
 # Job state is the one thing in either bar that is NOT accent-coloured, and
 # deliberately: "which of my jobs are actually running" has to read the same on
 # every machine whatever primary is set, the way a traffic light does. Both are
-# palette hexes (monokai green / yellow) so they still sit with everything else,
-# and both are drawn as FOREGROUND on black here -- the "light enough to take
-# black text" rule that governs the accents does not apply to them.
-RUN_FG="#a6e22e"     # R  -- running
-QUEUE_FG="#ffd866"   # PD -- pending, i.e. sitting in the queue
+# palette hexes (the neon row's green / yellow) so they still sit with everything
+# else, and both are drawn as FOREGROUND on black here -- the "light enough to
+# take black text" rule that governs the accents does not apply to them.
+RUN_FG="#00ff00"     # R  -- running
+QUEUE_FG="#fff700"   # PD -- pending, i.e. sitting in the queue
+
+# The same cap oh-my-posh's machine segment carries and derive.sh spells as
+# CAP -- U+E0BA + U+E0BC. Written as its UTF-8 bytes for the reason derive.sh
+# gives for using $'...' at all: a PUA codepoint pasted raw into a shell script
+# is exactly the kind of thing an editor or a terminal in between silently turns
+# into nothing, and unlike derive.sh's own copy this one survives that. \x and
+# not \u deliberately: \u in $'...' is bash 4.2 and up, and this script runs
+# under whatever /bin/bash is, which on macOS is 3.2.
+GLYPH=$'\xee\x82\xba\xee\x82\xbc'
 
 if [ -z "$JOBS" ]; then
     echo "" #[fg=#555555,bg=#000000]"
@@ -28,10 +37,17 @@ while IFS='|' read -r name state; do
     # These two branches used to be byte-identical -- both @PRIMARY@ -- so a
     # queued job and a running one looked exactly the same, and the bar answered
     # the one question it exists to answer with "some jobs".
+    #
+    # Each pill led with an EMPTY "#[fg=#000000,bg=$RUN_FG]" directive: a style
+    # with no text after it, which tmux applies to nothing and which therefore
+    # drew a zero-width nothing. That is where the glyph belongs. It is painted
+    # foreground-on-black like the name beside it -- the same treatment
+    # oh-my-posh gives it and the same one derive.sh gives CAP, rather than the
+    # filled block the dead directive was reaching for.
     if [ "$state" == "R" ]; then
-        OUTPUT+="#[fg=#000000,bg=$RUN_FG]#[fg=$RUN_FG,bg=#000000] $short_name "
+        OUTPUT+="#[fg=$RUN_FG,bg=#000000]${GLYPH} $short_name "
     elif [ "$state" == "PD" ]; then
-        OUTPUT+="#[fg=#000000,bg=$QUEUE_FG]#[fg=$QUEUE_FG,bg=#000000] $short_name "
+        OUTPUT+="#[fg=$QUEUE_FG,bg=#000000]${GLYPH} $short_name "
     fi
 done <<< "$JOBS"
 

@@ -224,13 +224,12 @@ TOOL_META=(
   "delta|delta (git pager)|shell"
   "glow|glow (markdown)|shell"
   "dua|dua-cli (disk usage)|shell"
-  "nvtop|nvtop (GPU monitor)|gpu"
   "neovim|Neovim|editor"
   "lazyvim|LazyVim starter|editor"
   "claude|Claude Code|editor"
   "gdown|gdown|python"
   "groundcontrol|ground-control-tui|python"
-  "nvitop|nvitop|gpu"
+  "nvitop|nvitop (GPU monitor)|gpu"
   "tailscale|Tailscale (needs 'up')|net"
   "herdr|herdr|herdr"
   "herdr_statusline|herdr-statusline plugin|herdr"
@@ -383,14 +382,14 @@ brew_activate() {
 # --- conda-forge, via micromamba ------------------------------------------
 # The answer to "how do you install git with no sudo", and the reason this
 # section exists at all. Until it did, a machine with no apt, no Homebrew and no
-# git had NO route to git, tmux, eza, fd, bat, delta or nvtop -- which is to say
+# git had NO route to git, tmux, eza, fd, bat or delta -- which is to say
 # an HPC login node, the exact machine this repo is most often set up on, was
 # told "needs apt" about half the catalogue.
 #
 # micromamba is the bootstrap because it is a single statically-useful binary at
 # a permanent-redirect URL: no privilege, no Python, no tarball, no unzip, and
 # nothing to build. Exactly the shape fetch_bin() already handles for jq and
-# oh-my-posh. conda-forge then has current builds of all seven tools above for
+# oh-my-posh. conda-forge then has current builds of all six tools above for
 # every platform this repo targets (linux-64/aarch64, osx-64/arm64).
 #
 # Two deliberate limits:
@@ -465,7 +464,6 @@ tool_present() {
     # The package is dua-cli, the binary is dua -- same split as git-delta/delta
     # and fd-find/fd, and the id follows the binary like those two do.
     dua)           have dua ;;
-    nvtop)         have nvtop ;;
     neovim)        have nvim ;;
     # The starter drops an init.lua in; anything else already there is somebody
     # else's config and install_lazyvim() will refuse to touch it.
@@ -580,8 +578,8 @@ providers_seen() {
 # ...and the other half of that, which was missing. A provider whose install was
 # ATTEMPTED AND FAILED must stop being offered as a route, or every tool behind
 # it fails in turn for a reason that is not its own: kill the network and
-# `micromamba` failing was followed by git, tmux and nvtop each reporting a bare
-# FAILED, three more round-trips spent, and nothing saying why.
+# `micromamba` failing was followed by git and tmux each reporting a bare
+# FAILED, two more round-trips spent, and nothing saying why.
 #
 # Only the two providers whose "is it coming" answer is PREDICTIVE need this.
 # AVAIL_CARGO/AVAIL_CC/AVAIL_GIT are only ever flipped on by providers_seen, so a
@@ -671,8 +669,6 @@ conda_needed() {
   # this it was apt, Homebrew, or nothing at all -- and "nothing at all" on the
   # login nodes whose tmux config is the main thing this repo syncs.
   if tool_selected tmux && ! tool_present tmux; then return 0; fi
-  # Linux only, exactly as the nvtop route is: no NVIDIA GPUs on macOS.
-  if ! is_mac && tool_selected nvtop && ! tool_present nvtop; then return 0; fi
   # And the four rust tools, but only when nothing will be able to build them.
   # cargo_coming plus a live AVAIL_CC is the whole test: apt is already ruled
   # out above, and apt is the only thing that could have added a compiler, so
@@ -721,19 +717,16 @@ brew_needed() {
   # when there is no conda route either. tool_selected/tool_present rather than
   # tool_route, which would recurse straight back into here.
   if [ "$conda_will" = 0 ] && tool_selected tmux && ! tool_present tmux; then return 0; fi
+  # macOS only. There is no apt to fall back to there, so brew is the system
+  # route and these two have no other one at all: git ships with the Xcode
+  # Command Line Tools (which Homebrew's own installer pulls in) and Tailscale
+  # publishes no darwin tarball. Linux has no such case left -- nvtop was the
+  # sharp one (no cargo crate, no useful release tarball) and it is gone from
+  # the catalogue; nvitop, which replaced it, is a uv tool install.
   if is_mac; then
-    # There is no apt to fall back to here, so brew is the system route and
-    # these two have no other one at all: git ships with the Xcode Command Line
-    # Tools (which Homebrew's own installer pulls in) and Tailscale publishes no
-    # darwin tarball.
     for id in git tailscale; do
       if tool_selected "$id" && ! tool_present "$id"; then return 0; fi
     done
-  else
-    # nvtop was the sharp case on Linux: no cargo crate, no useful release
-    # tarball. conda-forge has one, so Homebrew is now only wanted for it when
-    # conda is not coming. On macOS it is not a case at all -- see tool_route.
-    if [ "$conda_will" = 0 ] && tool_selected nvtop && ! tool_present nvtop; then return 0; fi
   fi
   if [ "$conda_will" = 0 ] && ! cargo_coming; then
     for id in eza fd bat delta; do
@@ -759,8 +752,8 @@ brew_obtainable() {
 # The question every route that falls back to Homebrew actually wants answered.
 # AVAIL_BREW alone is not it either: brew is the FIRST catalogue entry, so a walk
 # that is going to install it has already flipped the flag by the time anything
-# else is resolved -- but a route asked outside that order (install_nvtop() and
-# install_tmux() re-resolve their own) still needs the honest answer.
+# else is resolved -- but a route asked outside that order (install_tmux() and
+# install_git() re-resolve their own) still needs the honest answer.
 brew_coming() {
   [ "$AVAIL_BREW" = 1 ] && return 0
   [ "$BREW_FAILED" = 1 ] && return 1   # already tried this run; it did not work
@@ -770,8 +763,8 @@ brew_coming() {
 # --- route resolution -----------------------------------------------------
 # One decision point, used by both --plan and install_tools(). Prints
 # "method|detail". An empty method means there is no route on this machine; the
-# method "na" means there is nothing to do here and never was (nvtop on a Mac,
-# Homebrew on a machine that needs nothing from it), which both callers report
+# method "na" means there is nothing to do here and never was (herdr-statusline
+# on a Mac, Homebrew on a machine that needs nothing from it), which both report
 # as a skip rather than as a machine that fell short.
 tool_route() {
   case "$1" in
@@ -879,14 +872,6 @@ tool_route() {
     dua)      if rust_triple >/dev/null 2>&1; then echo "tarball|Byron/dua-cli -> ~/.local/bin"
               elif cargo_usable; then echo "cargo|dua-cli"
               else echo "|no release for $(uname -m), and no usable cargo"; fi ;;
-    # No NVIDIA GPU has ever been attached to a Mac that runs this, there is no
-    # nvtop formula for darwin, and nvidia-smi is what the tool wraps.
-    nvtop)    if is_mac; then echo "na|no NVIDIA GPUs on macOS"
-              elif [ "$AVAIL_APT" = 1 ]; then echo "apt|nvtop"
-              elif [ "$AVAIL_BREW" = 1 ]; then echo "brew|nvtop"
-              elif conda_coming; then echo "conda|nvtop (conda-forge)"
-              elif brew_coming; then echo "brew|nvtop"
-              else echo "|needs apt, Homebrew or conda-forge"; fi ;;
     # apt's neovim is 0.9.5 on 24.04, which LazyVim will start on and then warn
     # about forever. The official tarball is current, needs no privilege, and
     # lands where shellrc_additions.sh already puts ~/.local/nvim/bin on PATH.
@@ -1365,16 +1350,6 @@ install_dua() {
   cargo_install dua-cli && note_path "$HOME/.cargo/bin"
 }
 
-install_nvtop() {
-  local route; route="$(tool_route nvtop)"
-  case "${route%%|*}" in
-    apt)   apt_install nvtop ;;
-    brew)  brew_install nvtop ;;
-    conda) _install_conda_pkg nvtop nvtop ;;
-    *)     return 1 ;;
-  esac
-}
-
 install_tmux() {
   local route; route="$(tool_route tmux)"
   case "${route%%|*}" in
@@ -1578,7 +1553,7 @@ tools_plan() {
     route="$(tool_route "$id")"; method="${route%%|*}"; detail="${route#*|}"
     # Before the no-route check below: "na" is the normal, intended outcome for
     # a tool this machine has no business installing (Homebrew when nothing
-    # needs it, nvtop on a Mac) rather than a machine that fell short.
+    # needs it, herdr-statusline on a Mac) than a machine that fell short.
     if [ "$method" = na ]; then
       printf '%s|skip|-|%s\n' "$id" "$detail"; continue
     fi
