@@ -116,12 +116,25 @@ priv_resolve() {
 }
 
 priv_summary() {
-  local sys=apt; is_mac && sys=Homebrew
+  # Whether privilege is any USE here, which is not the same as having it. On a
+  # Fedora, Arch or openSUSE box -- or an HPC node with sudo and no apt -- this
+  # said "passwordless sudo -- apt available" while every route below it said
+  # "needs apt". apt is the only system package manager wired up on Linux (see
+  # the header), so no apt means sudo buys nothing and the userland routes are
+  # what will run. macOS is the exception: its system route is Homebrew, which
+  # admin can install rather than having to already have.
+  local sys=""
+  if is_mac; then sys=Homebrew
+  elif have apt-get; then sys=apt; fi
+  if [ -z "$sys" ] && [ "$PRIV_MODE" != none ]; then
+    echo "sudo, but no apt -- \$HOME routes"
+    return
+  fi
   case "$PRIV_MODE" in
     # Kept under 40 cells: both front-ends show this as a hint, the UI's in a
     # 41-cell panel and the wizard's on whatever terminal you have. "Homebrew"
     # is three cells longer than "apt" and still fits.
-    root)         echo "root -- system packages available" ;;
+    root)         echo "root -- $sys available" ;;
     passwordless) echo "passwordless sudo -- $sys available" ;;
     password)     echo "sudo ok (asks once for a password)" ;;
     *)            echo "no sudo -- installs under \$HOME" ;;
@@ -196,6 +209,7 @@ run_priv() {
 # has done anything at all.
 TOOL_META=(
   "brew|Homebrew (if needed)|providers"
+  "micromamba|conda-forge (if needed)|providers"
   "git|git|providers"
   "buildtools|C toolchain (if needed)|providers"
   "rust|Rust toolchain (cargo)|providers"
@@ -209,6 +223,7 @@ TOOL_META=(
   "bat|bat (cat)|shell"
   "delta|delta (git pager)|shell"
   "glow|glow (markdown)|shell"
+  "dua|dua-cli (disk usage)|shell"
   "nvtop|nvtop (GPU monitor)|gpu"
   "neovim|Neovim|editor"
   "lazyvim|LazyVim starter|editor"
@@ -365,6 +380,62 @@ brew_activate() {
   have brew
 }
 
+# --- conda-forge, via micromamba ------------------------------------------
+# The answer to "how do you install git with no sudo", and the reason this
+# section exists at all. Until it did, a machine with no apt, no Homebrew and no
+# git had NO route to git, tmux, eza, fd, bat, delta or nvtop -- which is to say
+# an HPC login node, the exact machine this repo is most often set up on, was
+# told "needs apt" about half the catalogue.
+#
+# micromamba is the bootstrap because it is a single statically-useful binary at
+# a permanent-redirect URL: no privilege, no Python, no tarball, no unzip, and
+# nothing to build. Exactly the shape fetch_bin() already handles for jq and
+# oh-my-posh. conda-forge then has current builds of all seven tools above for
+# every platform this repo targets (linux-64/aarch64, osx-64/arm64).
+#
+# Two deliberate limits:
+#
+#   * it is a LAST resort, ordered behind apt, cargo and Homebrew everywhere.
+#     A ~300MB environment is worth it to unblock a tool, not to replace a route
+#     that already works;
+#   * `buildtools` is NOT routed through it, even though conda-forge has gcc.
+#     A conda compiler links against conda's own libgcc and sysroot, so the
+#     cargo binaries it produced would depend on this environment continuing to
+#     exist -- a `cargo build` that works today and breaks when the env is
+#     pruned is worse than an honest "needs apt". herdr_statusline therefore
+#     still wants a real compiler, and still says so.
+#
+# The env lives in its own prefix and only the binaries actually asked for are
+# symlinked into ~/.local/bin. Putting $CONDA_ENV/bin on PATH would be less
+# code and much worse: a conda env's bin holds its own python, curl, openssl and
+# ncurses, and shadowing the system's with them is the classic way conda breaks
+# a shell it was only supposed to add one command to.
+CONDA_ROOT="$HOME/.local/share/dotfiles-conda"
+CONDA_ENV="$CONDA_ROOT/envs/tools"
+
+# conda-forge's spelling of this platform, which is its own again -- neither
+# arch_deb()'s amd64/arm64 nor arch_tag()'s x86_64/arm64, and "osx" rather than
+# either darwin or macos. Empty for an architecture conda-forge does not build.
+conda_platform() {
+  case "$OS_KERNEL/$(uname -m)" in
+    Darwin/arm64)       printf 'osx-arm64' ;;
+    Darwin/x86_64)      printf 'osx-64' ;;
+    */x86_64|*/amd64)   printf 'linux-64' ;;
+    */aarch64|*/arm64)  printf 'linux-aarch64' ;;
+    */ppc64le)          printf 'linux-ppc64le' ;;
+    *) return 1 ;;
+  esac
+}
+
+# By path, not by PATH, for the same reason brew_prefix() is: an earlier run
+# put it in ~/.local/bin, which a non-login shell has very likely never had.
+micromamba_bin() {
+  if have micromamba; then command -v micromamba; return 0; fi
+  [ -x "$HOME/.local/bin/micromamba" ] || return 1
+  printf '%s' "$HOME/.local/bin/micromamba"
+}
+have_micromamba() { micromamba_bin >/dev/null 2>&1; }
+
 herdr_has_plugin() {
   have herdr || return 1
   herdr plugin list 2>/dev/null | grep -q "^- $1 "
@@ -381,6 +452,7 @@ tool_present() {
     buildtools)    have_cc ;;
     tmux)          have tmux ;;
     brew)          have brew || brew_prefix >/dev/null 2>&1 ;;
+    micromamba)    have_micromamba ;;
     ohmyposh)      have oh-my-posh ;;
     jq)            have jq ;;
     zoxide)        have zoxide ;;
@@ -390,6 +462,9 @@ tool_present() {
     bat)           have bat || have batcat ;;
     delta)         have delta ;;
     glow)          have glow ;;
+    # The package is dua-cli, the binary is dua -- same split as git-delta/delta
+    # and fd-find/fd, and the id follows the binary like those two do.
+    dua)           have dua ;;
     nvtop)         have nvtop ;;
     neovim)        have nvim ;;
     # The starter drops an init.lua in; anything else already there is somebody
@@ -453,6 +528,7 @@ tools_export() {
 # on the machine now and are flipped on as the walk passes a provider it is
 # going to install, so a tool listed after rust can count on cargo.
 AVAIL_APT=0 AVAIL_CARGO=0 AVAIL_UV=0 AVAIL_BREW=0 AVAIL_GIT=0 AVAIL_CC=0
+AVAIL_CONDA=0
 
 providers_init() {
   AVAIL_APT=0; priv_available && have apt-get && AVAIL_APT=1
@@ -473,6 +549,19 @@ providers_init() {
   # to know it is there, and must stay free of side effects.
   AVAIL_BREW=0
   if have brew || brew_prefix >/dev/null 2>&1; then AVAIL_BREW=1; fi
+  # Same reasoning again: an earlier run's micromamba sits in ~/.local/bin, which
+  # this process may not have on PATH yet.
+  #
+  # An `if` rather than the `have_micromamba && AVAIL_CONDA=1` the lines above
+  # use, and that is load-bearing: this is the LAST statement of the function, so
+  # its exit status is the function's. install.sh sources this file under
+  # `set -euo pipefail` and calls providers_init bare, so on any machine without
+  # micromamba -- i.e. almost all of them -- a failing AND-list here took the
+  # whole install down silently, right after "Saved answers to ...". The earlier
+  # lines get away with it only by not being last. An `if` with no else always
+  # returns 0, which is also why the brew line above is written this way.
+  AVAIL_CONDA=0
+  if have_micromamba; then AVAIL_CONDA=1; fi
 }
 
 # "the walk has just got past a provider": everything after it may count on it.
@@ -484,6 +573,28 @@ providers_seen() {
     brew) AVAIL_BREW=1 ;;
     git)  AVAIL_GIT=1 ;;
     buildtools) AVAIL_CC=1 ;;
+    micromamba) AVAIL_CONDA=1 ;;
+  esac
+}
+
+# ...and the other half of that, which was missing. A provider whose install was
+# ATTEMPTED AND FAILED must stop being offered as a route, or every tool behind
+# it fails in turn for a reason that is not its own: kill the network and
+# `micromamba` failing was followed by git, tmux and nvtop each reporting a bare
+# FAILED, three more round-trips spent, and nothing saying why.
+#
+# Only the two providers whose "is it coming" answer is PREDICTIVE need this.
+# AVAIL_CARGO/AVAIL_CC/AVAIL_GIT are only ever flipped on by providers_seen, so a
+# failed rust already stops cargo_usable() dead and the routes behind it fall
+# through on their own. brew_coming() and conda_coming(), by contrast, answer
+# from brew_needed()/conda_needed() -- which say what SHOULD happen, and go on
+# saying it after it has already not happened.
+BREW_FAILED=0
+CONDA_FAILED=0
+providers_failed() {
+  case "$1" in
+    brew)       BREW_FAILED=1 ;;
+    micromamba) CONDA_FAILED=1 ;;
   esac
 }
 
@@ -511,7 +622,9 @@ cc_needed() {
   [ "$AVAIL_CC" = 1 ] && return 1
   cargo_coming || return 1          # nothing will be building with cargo at all
   local id
-  # herdr-statusline compiles hsl-config; there is no prebuilt route to it.
+  # herdr-statusline compiles hsl-config; there is no prebuilt route to it, and
+  # deliberately no conda one either (see the conda-forge section above), so this
+  # is the one clause a conda environment cannot answer.
   if ! is_mac && tool_selected herdr_statusline && ! tool_present herdr_statusline; then
     return 0
   fi
@@ -522,10 +635,68 @@ cc_needed() {
   else
     [ "$AVAIL_APT" = 1 ] && return 1
   fi
+  # ...nor when conda-forge will, which is a prebuilt binary against a compile.
+  conda_coming && return 1
   for id in eza fd bat delta; do
     if tool_selected "$id" && ! tool_present "$id"; then return 0; fi
   done
   return 1
+}
+
+# Whether a conda-forge environment is worth putting on this machine: only when
+# it is the LAST route left to something actually selected. Shaped like
+# brew_needed() and cc_needed(), and like them it deliberately does not ask
+# tool_route() -- those routes consult AVAIL_CONDA, so that would be circular.
+#
+# It never asks brew_needed()/brew_coming() either, which is what keeps the two
+# from calling each other in a loop. Instead the precedence between them is
+# FIXED here and mirrored there: an already-present Homebrew wins (a bottle is
+# seconds), but one that would have to be bootstrapped loses -- ~1GB and a
+# source build on a no-admin Mac, against a 20MB binary and a 300MB env.
+conda_needed() {
+  tool_selected micromamba || return 1
+  [ "$AVAIL_CONDA" = 1 ] && return 1
+  conda_platform >/dev/null 2>&1 || return 1   # no conda-forge build for this arch
+  [ "$AVAIL_APT" = 1 ] && return 1             # apt covers every candidate below
+  [ "$AVAIL_BREW" = 1 ] && return 1            # so does a Homebrew already here
+  local id
+  # git first, because it is the one that unblocks others (fzf, LazyVim, and
+  # Homebrew's own Linux bootstrap all clone with it). On macOS with admin,
+  # Homebrew's installer brings the Xcode CLT and therefore git AND a compiler,
+  # which is a better answer than a conda git -- so that case is left to it.
+  if tool_selected git && ! tool_present git && ! { is_mac && priv_available; }; then
+    return 0
+  fi
+  # tmux is the other one that matters: upstream ships source only, so before
+  # this it was apt, Homebrew, or nothing at all -- and "nothing at all" on the
+  # login nodes whose tmux config is the main thing this repo syncs.
+  if tool_selected tmux && ! tool_present tmux; then return 0; fi
+  # Linux only, exactly as the nvtop route is: no NVIDIA GPUs on macOS.
+  if ! is_mac && tool_selected nvtop && ! tool_present nvtop; then return 0; fi
+  # And the four rust tools, but only when nothing will be able to build them.
+  # cargo_coming plus a live AVAIL_CC is the whole test: apt is already ruled
+  # out above, and apt is the only thing that could have added a compiler, so
+  # AVAIL_CC cannot change under us after this point.
+  if ! { cargo_coming && [ "$AVAIL_CC" = 1 ]; }; then
+    for id in eza fd bat delta; do
+      if tool_selected "$id" && ! tool_present "$id"; then return 0; fi
+    done
+  fi
+  return 1
+}
+
+# ...and whether it can be, the brew_obtainable() counterpart. Far simpler,
+# which is the point of choosing micromamba as the bootstrap: one curl of one
+# binary, no privilege, no git, no compiler, nothing to unpack.
+conda_obtainable() { have curl && conda_platform >/dev/null 2>&1; }
+
+# What every route that falls back to conda-forge asks, rather than AVAIL_CONDA
+# -- micromamba is resolved early in the walk, but install_git()/install_tmux()
+# and friends re-resolve their own route outside that order.
+conda_coming() {
+  [ "$AVAIL_CONDA" = 1 ] && return 0
+  [ "$CONDA_FAILED" = 1 ] && return 1  # already tried this run; it did not work
+  conda_needed && conda_obtainable
 }
 
 # Homebrew is bootstrapped only when it is the *sole* remaining route to
@@ -537,11 +708,19 @@ brew_needed() {
   [ "$AVAIL_BREW" = 1 ] && return 1
   [ "$AVAIL_APT" = 1 ] && return 1     # apt covers everything brew would
   local id
-  # tmux is the one entry that counts on BOTH platforms: upstream ships source
-  # only, so with apt out there is no route to it anywhere except Homebrew --
-  # and macOS ships screen, not tmux. tool_selected/tool_present rather than
+  # Everything below is also served by conda-forge except macOS's git and
+  # Tailscale, so a conda environment that is coming anyway settles those cases
+  # far more cheaply than bootstrapping Homebrew for them would. See
+  # conda_needed() for the fixed precedence this mirrors; asking conda_coming()
+  # here is safe only because conda_needed() never asks back.
+  local conda_will=0
+  conda_coming && conda_will=1
+  # tmux used to be the one entry that counted on BOTH platforms, since upstream
+  # ships source only and macOS ships screen rather than tmux. conda-forge now
+  # has a current tmux for all four platforms, so Homebrew is only wanted for it
+  # when there is no conda route either. tool_selected/tool_present rather than
   # tool_route, which would recurse straight back into here.
-  if tool_selected tmux && ! tool_present tmux; then return 0; fi
+  if [ "$conda_will" = 0 ] && tool_selected tmux && ! tool_present tmux; then return 0; fi
   if is_mac; then
     # There is no apt to fall back to here, so brew is the system route and
     # these two have no other one at all: git ships with the Xcode Command Line
@@ -551,11 +730,12 @@ brew_needed() {
       if tool_selected "$id" && ! tool_present "$id"; then return 0; fi
     done
   else
-    # nvtop is the sharp case on Linux: no cargo crate, no useful release
-    # tarball. On macOS it is not a case at all -- see tool_route.
-    if tool_selected nvtop && ! tool_present nvtop; then return 0; fi
+    # nvtop was the sharp case on Linux: no cargo crate, no useful release
+    # tarball. conda-forge has one, so Homebrew is now only wanted for it when
+    # conda is not coming. On macOS it is not a case at all -- see tool_route.
+    if [ "$conda_will" = 0 ] && tool_selected nvtop && ! tool_present nvtop; then return 0; fi
   fi
-  if ! cargo_coming; then
+  if [ "$conda_will" = 0 ] && ! cargo_coming; then
     for id in eza fd bat delta; do
       if tool_selected "$id" && ! tool_present "$id"; then return 0; fi
     done
@@ -583,6 +763,7 @@ brew_obtainable() {
 # install_tmux() re-resolve their own) still needs the honest answer.
 brew_coming() {
   [ "$AVAIL_BREW" = 1 ] && return 0
+  [ "$BREW_FAILED" = 1 ] && return 1   # already tried this run; it did not work
   brew_needed && brew_obtainable
 }
 
@@ -601,8 +782,12 @@ tool_route() {
     # Homebrew bootstraps itself by cloning its own repo WITH git.
     git)      if [ "$AVAIL_APT" = 1 ]; then echo "apt|git"
               elif [ "$AVAIL_BREW" = 1 ]; then echo "brew|git"
+              # The no-privilege route, and the reason the conda section exists:
+              # before it, this line was the flat "needs apt" that a no-sudo box
+              # got about the one tool half the catalogue clones with.
+              elif conda_coming; then echo "conda|git (conda-forge)"
               elif is_mac; then echo "|needs Homebrew, or: xcode-select --install"
-              else echo "|needs apt or an existing Homebrew"; fi ;;
+              else echo "|needs apt, Homebrew or conda-forge"; fi ;;
     # On Linux with privilege the official script is right: it picks the distro
     # package and sets up the systemd unit, which is what makes a real node.
     # Without, the static tarball still gives a working CLI and daemon, but the
@@ -639,6 +824,15 @@ tool_route() {
               elif ! have_git; then echo "|needs git to clone Homebrew with"
               elif is_mac; then echo "git|~/homebrew (no admin: builds from source)"
               else echo "git|~/.linuxbrew (sole route to something selected)"; fi ;;
+    # The unprivileged system route. Gated exactly like brew: only when it is
+    # the last one left to something selected, so a machine with apt (or a
+    # Homebrew already on it) never grows a conda environment it has no use for.
+    # "na" rather than blocked in that case -- there was never anything to do.
+    micromamba) if [ "$AVAIL_CONDA" = 1 ]; then echo "na|already present"
+              elif ! conda_platform >/dev/null 2>&1; then echo "na|no conda-forge build for $(uname -m)"
+              elif ! conda_needed; then echo "na|not needed on this machine"
+              elif ! have curl; then echo "|needs curl"
+              else echo "binary|micromamba -> ~/.local/bin (conda-forge)"; fi ;;
     # The one tool here whose config this repo cares about most and which has no
     # userland route at all: upstream ships source only (a build wants libevent
     # and ncurses headers, i.e. the whole problem buildtools exists to dodge),
@@ -649,9 +843,13 @@ tool_route() {
     # In practice the machines that hit the blocked case -- HPC login nodes --
     # are also the ones that came with tmux.
     tmux)     if [ "$AVAIL_APT" = 1 ]; then echo "apt|tmux"
+              elif [ "$AVAIL_BREW" = 1 ]; then echo "brew|tmux"
+              # conda-forge ahead of a Homebrew that is not here yet: both are
+              # prebuilt binaries, and one of them is not a 1GB bootstrap.
+              elif conda_coming; then echo "conda|tmux (conda-forge)"
               elif brew_coming; then echo "brew|tmux"
-              elif is_mac; then echo "|needs Homebrew"
-              else echo "|needs apt or Homebrew"; fi ;;
+              elif is_mac; then echo "|needs Homebrew or conda-forge"
+              else echo "|needs apt, Homebrew or conda-forge"; fi ;;
     ohmyposh) echo "binary|oh-my-posh release -> ~/.local/bin" ;;
     jq)       if [ "$AVAIL_APT" = 1 ]; then echo "apt|jq"
               else echo "binary|jqlang/jq -> ~/.local/bin"; fi ;;
@@ -661,17 +859,34 @@ tool_route() {
     fzf)      if [ "$AVAIL_GIT" = 1 ]; then echo "git|~/.fzf (--no-update-rc)"
               elif [ "$AVAIL_APT" = 1 ]; then echo "apt|fzf"
               else echo "|needs git or apt"; fi ;;
-    eza)      _route_system_or_cargo eza eza ;;
-    fd)       _route_system_or_cargo fd-find fd-find ;;
-    bat)      _route_system_or_cargo bat bat ;;
-    delta)    _route_system_or_cargo git-delta git-delta ;;
+    eza)      _route_system_or_cargo eza eza eza ;;
+    fd)       _route_system_or_cargo fd-find fd-find fd-find ;;
+    bat)      _route_system_or_cargo bat bat bat ;;
+    delta)    _route_system_or_cargo git-delta git-delta git-delta ;;
     glow)     echo "tarball|charmbracelet/glow -> ~/.local/bin" ;;
+    # dua-cli is in NO system package manager here -- not apt on 24.04, not
+    # Debian -- so the usual apt-first shape does not apply. What it does ship is
+    # a static musl binary per platform (plus riscv64 and armv7), which needs no
+    # privilege, no compiler and no matching glibc: strictly the best route on
+    # every machine, so there is nothing for privilege to change. conda-forge has
+    # it too but two versions behind, and pulling a ~300MB environment for a tool
+    # whose own binary is a 2MB download would be the wrong trade -- so dua is
+    # deliberately NOT in conda_needed().
+    #
+    # cargo only as the answer for an architecture rust_triple() cannot name;
+    # install_dua() also falls back to it if the asset lookup fails, for the
+    # reason spelled out there.
+    dua)      if rust_triple >/dev/null 2>&1; then echo "tarball|Byron/dua-cli -> ~/.local/bin"
+              elif cargo_usable; then echo "cargo|dua-cli"
+              else echo "|no release for $(uname -m), and no usable cargo"; fi ;;
     # No NVIDIA GPU has ever been attached to a Mac that runs this, there is no
     # nvtop formula for darwin, and nvidia-smi is what the tool wraps.
     nvtop)    if is_mac; then echo "na|no NVIDIA GPUs on macOS"
               elif [ "$AVAIL_APT" = 1 ]; then echo "apt|nvtop"
+              elif [ "$AVAIL_BREW" = 1 ]; then echo "brew|nvtop"
+              elif conda_coming; then echo "conda|nvtop (conda-forge)"
               elif brew_coming; then echo "brew|nvtop"
-              else echo "|needs apt or Homebrew"; fi ;;
+              else echo "|needs apt, Homebrew or conda-forge"; fi ;;
     # apt's neovim is 0.9.5 on 24.04, which LazyVim will start on and then warn
     # about forever. The official tarball is current, needs no privilege, and
     # lands where shellrc_additions.sh already puts ~/.local/nvim/bin on PATH.
@@ -719,20 +934,27 @@ tool_route() {
 # compiler on a bare machine before failing at the link step -- when Homebrew
 # below would have worked. The wording says "compiler" rather than "cargo" when
 # cargo is the half that IS here, so the message names what is actually missing.
+# conda-forge sits between "a Homebrew that would have to be bootstrapped" and
+# "nothing", for the same reason it does for tmux: both are prebuilt, one is a
+# 1GB detour. Its package names are a third spelling again -- apt's fd-find,
+# cargo's fd-find, Homebrew's fd and conda-forge's fd-find -- so it is passed in
+# rather than derived from any of the others.
 _route_system_or_cargo() {
-  local apt_pkg="$1" crate="$2" formula="${1%-find}" lack="cargo"
+  local apt_pkg="$1" crate="$2" conda_pkg="$3" formula="${1%-find}" lack="cargo"
   [ "$AVAIL_CARGO" = 1 ] && [ "$AVAIL_CC" = 0 ] && lack="a C compiler"
   if is_mac; then
     if [ "$AVAIL_BREW" = 1 ]; then echo "brew|$formula"
     elif cargo_usable; then echo "cargo|$crate"
+    elif conda_coming; then echo "conda|$conda_pkg (conda-forge)"
     elif brew_coming; then echo "brew|$formula"
-    else echo "|needs $lack or Homebrew"; fi
+    else echo "|needs $lack, Homebrew or conda-forge"; fi
     return
   fi
   if [ "$AVAIL_APT" = 1 ]; then echo "apt|$apt_pkg"
   elif cargo_usable; then echo "cargo|$crate"
+  elif conda_coming; then echo "conda|$conda_pkg (conda-forge)"
   elif brew_coming; then echo "brew|$formula"
-  else echo "|needs apt, $lack or Homebrew"; fi
+  else echo "|needs apt, $lack, Homebrew or conda-forge"; fi
 }
 
 _pypi_name() {
@@ -852,15 +1074,96 @@ arch_tag() {
   esac
 }
 
+# The Rust target triple, which is how a project releasing through cargo-dist or
+# cross names its assets -- and a FOURTH spelling of this platform after
+# arch_deb()'s amd64, arch_tag()'s x86_64/arm64 and conda_platform()'s osx-arm64.
+# The trap is `aarch64`: Rust uses it on macOS as well as Linux, where arch_tag()
+# says arm64, so reusing that helper matches no asset at all on Apple silicon.
+#
+# musl rather than gnu on Linux, deliberately: the result is a STATIC binary, so
+# it does not care what vintage of glibc the machine has -- which is exactly the
+# property wanted on an old cluster login node. A project that publishes only
+# gnu builds needs its own pattern rather than this helper; what actually selects
+# the asset is the regex passed to github_latest_asset(), and this only supplies
+# the platform half of it.
+#
+# Empty for an architecture with no mapping, which callers report as blocked.
+rust_triple() {
+  case "$OS_KERNEL/$(uname -m)" in
+    Darwin/arm64)        printf 'aarch64-apple-darwin' ;;
+    Darwin/x86_64)       printf 'x86_64-apple-darwin' ;;
+    */x86_64|*/amd64)    printf 'x86_64-unknown-linux-musl' ;;
+    */aarch64|*/arm64)   printf 'aarch64-unknown-linux-musl' ;;
+    # Both published by dua-cli, and neither has a musl build -- so they are gnu
+    # here, and a tool that does not ship them simply fails the asset match.
+    */riscv64)           printf 'riscv64gc-unknown-linux-gnu' ;;
+    */armv7l|*/armv7)    printf 'arm-unknown-linux-gnueabihf' ;;
+    *) return 1 ;;
+  esac
+}
+
 # --- the installers -------------------------------------------------------
 # One per tool, each free to do whatever that tool needs. They return non-zero
 # on failure and the orchestrator records it; nothing here is ever fatal.
+
+# micromamba is a bare static binary at a permanent-redirect URL, so this is
+# fetch_bin() and nothing else -- no API call to be rate limited, no archive, no
+# unzip, no privilege. The same shape jq and oh-my-posh take, and the reason it
+# was chosen as the conda bootstrap over anaconda/miniforge installers.
+install_micromamba() {
+  local plat; plat="$(conda_platform)" || return 1
+  fetch_bin \
+    "https://github.com/mamba-org/micromamba-releases/releases/latest/download/micromamba-$plat" \
+    micromamba || return 1
+  have_micromamba
+}
+
+# _install_conda_pkg <conda-package> <binary> [binary...]
+# One shared environment for every conda-routed tool, and only the binaries
+# named here are exposed -- as symlinks into ~/.local/bin rather than by putting
+# $CONDA_ENV/bin on PATH, which would shadow the system python, curl, openssl
+# and ncurses with conda's own. See the conda-forge section above.
+#
+# --no-rc so a ~/.mambarc or ~/.condarc on the machine (very common on a cluster,
+# and often pointing at an internal mirror) cannot change which channel this
+# resolves against; -c conda-forge is then the only one in play.
+_install_conda_pkg() {
+  local pkg="$1"; shift
+  local mm name
+  mm="$(micromamba_bin)" || return 1
+  mkdir -p "$CONDA_ROOT" "$HOME/.local/bin"
+  # `install` into an existing prefix, `create` to make it: micromamba's install
+  # refuses a prefix that has no conda-meta, and create refuses one that has.
+  if [ -d "$CONDA_ENV/conda-meta" ]; then
+    "$mm" install -y -q --no-rc -r "$CONDA_ROOT" -p "$CONDA_ENV" -c conda-forge "$pkg" \
+      >/dev/null 2>&1 || return 1
+  else
+    "$mm" create -y -q --no-rc -r "$CONDA_ROOT" -p "$CONDA_ENV" -c conda-forge "$pkg" \
+      >/dev/null 2>&1 || return 1
+  fi
+  for name in "$@"; do
+    [ -x "$CONDA_ENV/bin/$name" ] || return 1
+    ln -sfn "$CONDA_ENV/bin/$name" "$HOME/.local/bin/$name"
+  done
+  # The downloaded archives, once they have been extracted, are dead weight --
+  # 62MB of the 444MB a git+tmux environment costs. Only --tarballs: the
+  # EXTRACTED packages under pkgs/ are what the env's files are hardlinked to,
+  # so cleaning those would either break the env or silently double its size.
+  # Non-fatal; a tool that installed is installed whatever the cleanup does.
+  "$mm" clean -y -q --tarballs -r "$CONDA_ROOT" >/dev/null 2>&1 || true
+  note_path "$HOME/.local/bin"
+}
 
 install_git() {
   local route; route="$(tool_route git)"
   case "${route%%|*}" in
     apt)  apt_install git ;;
     brew) brew_install git ;;
+    # git finds its own libexec/git-core from the path it was invoked through, so
+    # the symlink in ~/.local/bin resolves subcommands correctly -- `git clone`
+    # and `git log` work through it, which is the whole point of preferring a
+    # symlink to putting the env's bin on PATH.
+    conda) _install_conda_pkg git git ;;
     *)    return 1 ;;
   esac
 }
@@ -1010,21 +1313,27 @@ install_fzf() {
 }
 
 # eza / fd / bat / delta all share the apt-or-cargo-or-brew shape.
+# eza / fd / bat / delta all share the apt-or-cargo-or-conda-or-brew shape. The
+# binary a package installs is not always its own name (git-delta ships `delta`,
+# fd-find ships `fd`), so the conda branch is told both.
 _install_via_route() {
-  local id="$1" route method detail
+  local id="$1" bin="$2" route method detail pkg
   route="$(tool_route "$id")"; method="${route%%|*}"; detail="${route#*|}"
   case "$method" in
     apt)   apt_install "$detail" ;;
     cargo) cargo_install "$detail" && note_path "$HOME/.cargo/bin" ;;
     brew)  brew_install "$detail" ;;
+    # The detail carries a " (conda-forge)" tail for the plan's benefit; the
+    # package name is the first word of it.
+    conda) pkg="${detail%% *}"; _install_conda_pkg "$pkg" "$bin" ;;
     *)     return 1 ;;
   esac
 }
 
-install_eza()   { _install_via_route eza; }
-install_fd()    { _install_via_route fd; }
-install_bat()   { _install_via_route bat; }
-install_delta() { _install_via_route delta; }
+install_eza()   { _install_via_route eza eza; }
+install_fd()    { _install_via_route fd fd; }
+install_bat()   { _install_via_route bat bat; }
+install_delta() { _install_via_route delta delta; }
 
 install_glow() {
   local url os="[Ll]inux"
@@ -1034,21 +1343,45 @@ install_glow() {
   fetch_bin_from_tarball "$url" glow
 }
 
+# Unlike jq and oh-my-posh, dua's assets embed the VERSION in their filenames
+# (dua-v2.41.0-aarch64-unknown-linux-musl.tar.gz), so the
+# /releases/latest/download/<name> permanent redirect those two use cannot work
+# here -- the name is not predictable without knowing the tag. That means an API
+# call, and the unauthenticated GitHub limit is 60/hour PER IP: on a shared login
+# node or in CI that is a real thing to be on the wrong side of. Hence the cargo
+# fallback, the same belt-and-braces shape install_ohmyposh() has. The route
+# still advertises the tarball, because that is what will be tried first and a
+# plan cannot know in advance that a rate limit is waiting.
+install_dua() {
+  local triple url
+  triple="$(rust_triple)" || return 1
+  url="$(github_latest_asset Byron/dua-cli "$triple\.tar\.gz")"
+  # The archive is one directory deep; fetch_bin_from_tarball finds the binary by
+  # name, so that needs no --strip-components guess.
+  if [ -n "$url" ] && fetch_bin_from_tarball "$url" dua; then
+    return 0
+  fi
+  cargo_usable || return 1
+  cargo_install dua-cli && note_path "$HOME/.cargo/bin"
+}
+
 install_nvtop() {
   local route; route="$(tool_route nvtop)"
   case "${route%%|*}" in
-    apt)  apt_install nvtop ;;
-    brew) brew_install nvtop ;;
-    *)    return 1 ;;
+    apt)   apt_install nvtop ;;
+    brew)  brew_install nvtop ;;
+    conda) _install_conda_pkg nvtop nvtop ;;
+    *)     return 1 ;;
   esac
 }
 
 install_tmux() {
   local route; route="$(tool_route tmux)"
   case "${route%%|*}" in
-    apt)  apt_install tmux ;;
-    brew) brew_install tmux ;;
-    *)    return 1 ;;
+    apt)   apt_install tmux ;;
+    brew)  brew_install tmux ;;
+    conda) _install_conda_pkg tmux tmux ;;
+    *)     return 1 ;;
   esac
 }
 
@@ -1164,6 +1497,13 @@ PREVIEW_TOOLS=(ohmyposh jq)
 
 install_preview_prereqs() {
   local id route method rc any=0
+  # Saved and put back at the end. The downgrade below is meant to last for this
+  # pre-pass only, and install.sh has ALREADY resolved and printed the real
+  # answer by the time this runs -- so leaving PRIV_MODE=none behind made the
+  # text wizard head its tool list "no sudo -- installs under $HOME" on a
+  # machine that has sudo, then install_tools() re-resolve and use apt anyway.
+  # The plan disagreeing with the run is the one thing this file exists to stop.
+  local was_mode="$PRIV_MODE" was_sudo="$SUDO"
   detect_privilege
   # This never prompts. It runs before the user has been asked anything, and
   # demanding a sudo password before the first question is a poor greeting --
@@ -1194,6 +1534,9 @@ install_preview_prereqs() {
     *":$HOME/.local/bin:"*) ;;
     *) PATH="$HOME/.local/bin:$PATH"; export PATH ;;
   esac
+  # The privilege state as the caller had it, so nothing downstream reads this
+  # pre-pass's deliberately pessimistic view as the machine's real one.
+  PRIV_MODE="$was_mode"; SUDO="$was_sudo"
   [ "$any" -eq 1 ] && echo ""
   return 0
 }
@@ -1205,6 +1548,14 @@ install_preview_prereqs() {
 # Prints "id|status|method|detail"; status is present|install|skip|blocked.
 tools_plan() {
   priv_resolve
+  # The same ~/.local/bin that install_tools() prepends, and for the same reason
+  # -- without it the plan and the run disagree about every tool a PREVIOUS run
+  # installed there. On a machine whose login shell never added that directory
+  # (it did not exist at login, so Debian's ~/.profile skipped it), `have git`
+  # answers no about the git sitting in it, and the plan says "install" where the
+  # run then says "already installed". Only this process's PATH is touched, so
+  # the plan stays free of side effects on the machine itself.
+  _path_prepend "$HOME/.local/bin"
   providers_init
   local id route method detail dep missing
   for id in "${TOOL_IDS[@]}"; do
@@ -1316,6 +1667,10 @@ install_tools() {
     else
       echo "FAILED"
       TOOLS_FAILED+=("$id")
+      # A provider that failed must stop being advertised as a route, so the
+      # tools behind it are reported as skipped-with-a-reason rather than each
+      # failing again for somebody else's reason. See providers_failed().
+      providers_failed "$id"
     fi
   done
 

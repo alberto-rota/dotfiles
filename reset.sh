@@ -7,6 +7,10 @@ set -euo pipefail
 DOTFILES="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 XDG_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}"
 MANIFEST="$XDG_CONFIG/dotfiles/manifest.txt"
+# Where install.sh recorded which checkout it installed from, for the `dotfiles`
+# CLI to find. It describes an installation, so it goes with one -- same as the
+# manifest, and unlike theme.env (answers, deliberately kept).
+CHECKOUT_POINTER="$XDG_CONFIG/dotfiles/checkout"
 
 ASSUME_YES=0
 usage() {
@@ -20,6 +24,10 @@ appended to ~/.bashrc and ~/.zshrc.
 
 Numbered backups (.bak.2 and up, from a later run finding a real file at a path
 it had already taken over) are reported and left alone.
+
+The checkout itself, the saved answers and everything the tools phase installed
+are left alone; 'dotfiles purge' is this plus deleting the checkout and the
+answers. Reachable as 'dotfiles uninstall' from anywhere.
 
   -y, --non-interactive Don't ask for confirmation.
   -h, --help             Show this message.
@@ -143,13 +151,32 @@ if command -v herdr >/dev/null 2>&1; then
 fi
 
 rm -f "$MANIFEST"
+rm -f "$CHECKOUT_POINTER"
 
 echo ""
+# ~/.local/bin/dotfiles is on the manifest, so the loop above has just removed
+# it: worth saying out loud, since it is the command most people will have
+# reached for to get here. Suppressed under `dotfiles purge`, which runs this
+# script and then deletes the very checkout the second line points at.
+if [ -z "${DOTFILES_PURGING:-}" ]; then
+  echo "The 'dotfiles' CLI was removed along with everything else it installed."
+  echo "'bash $DOTFILES/install.sh' puts it (and all of this) back;"
+  echo "'dotfiles purge' would have deleted the checkout as well."
+  echo ""
+fi
 if [ "$EXTRA_BAKS" -gt 0 ]; then
   echo "$EXTRA_BAKS path(s) also had numbered backups (.bak.2 and up) alongside the"
   echo "original .bak that was just restored. Those are untouched -- look through"
   echo "them and delete the ones you don't want."
   echo ""
+fi
+# Every one of these says what was deliberately LEFT BEHIND, and `dotfiles purge`
+# goes on to delete two of them (the answers and the checkout) the moment this
+# script returns -- so under purge they would each be wrong by the time they were
+# read. It prints its own summary of what it removed instead.
+if [ -n "${DOTFILES_PURGING:-}" ]; then
+  echo "Reset done."
+  exit 0
 fi
 echo "Done. Theme answers at $XDG_CONFIG/dotfiles/theme.env were left alone --"
 echo "remove that file too if you want the next install.sh to prompt from scratch."
@@ -161,6 +188,21 @@ echo "cargo, the uv tools, Neovim, ...) and for $XDG_CONFIG/dotfiles/tools-env.s
 echo "reset undoes this repo's CONFIG, not the software on the machine. Each tool"
 echo "has its own uninstall (cargo uninstall, uv tool uninstall, brew uninstall,"
 echo "apt remove, or just deleting the binary from ~/.local/bin)."
+# Worth naming specifically, unlike the rest: it is by far the largest thing the
+# tools phase can leave behind (~385MB for a git+tmux environment), it only
+# exists on a machine that had no privileged route, and its path is not one
+# anybody would guess. The symlinks pointing into it are in ~/.local/bin.
+if [ -d "$HOME/.local/share/dotfiles-conda" ]; then
+  echo "One exception worth naming: the conda-forge environment used on machines"
+  echo "with no apt/Homebrew is the biggest thing left, at"
+  echo "  $(du -sh "$HOME/.local/share/dotfiles-conda" 2>/dev/null | awk '{print $1}')  in ~/.local/share/dotfiles-conda"
+  echo "Deleting it also breaks the ~/.local/bin symlinks into it (git, tmux, ...),"
+  echo "so remove those at the same time, or re-run install.sh to rebuild it."
+fi
+echo "To go further and delete the checkout itself, use 'dotfiles purge' rather"
+echo "than doing it by hand: it runs this script FIRST, so every backup is"
+echo "restored while the directory holding this file still exists. After a reset"
+echo "has already finished, 'rm -rf $DOTFILES' is the same thing."
 echo "'$DOTFILES/.generated' (rendered config) was left alone too; it's harmless"
 echo "and gitignored, and gets rewritten (or you can rm -rf it) the next time"
 echo "install.sh runs."

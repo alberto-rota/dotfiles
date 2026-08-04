@@ -290,6 +290,11 @@ With no options: installs uv if missing, then prompts (in the Textual UI) on the
 first run, then reuses the saved answers from
 $ANSWERS
 
+A run also puts a 'dotfiles' CLI on PATH (~/.local/bin/dotfiles) that wraps this
+script, reset.sh and lib/tools.sh from anywhere: 'dotfiles reconfigure',
+'dotfiles update', 'dotfiles backups', 'dotfiles uninstall', and 'dotfiles purge'
+(uninstall, then delete the checkout itself). 'dotfiles help' lists them all.
+
 Tools are installed by whichever route this machine can actually use: apt when
 you have root or sudo, and rustup/cargo, uv, release tarballs, git clones or
 Homebrew when you don't. './install.sh --tools-only -y' shows the plan and runs
@@ -330,6 +335,22 @@ section() {
   printf '\n  \033[1m%s\033[0m\n' "$1"
   [ -n "${2:-}" ] && printf '  \033[2m%s\033[0m\n' "$2"
   printf '\n'
+}
+
+# $HOME spelled as ~, for the messages that name a path in it. Nothing here can
+# run a path through a shell, so this is purely cosmetic -- but "~/.bashrc" is
+# 10 cells where "/home/somebody/.bashrc" is 23, and these lines are laid out to
+# fit a narrow terminal. Guarded against an unset or "/" HOME, which would
+# otherwise turn every absolute path into a tilde.
+tilde() {
+  case "${HOME:-}" in
+    ''|/) printf '%s' "$1"; return ;;
+  esac
+  case "$1" in
+    "$HOME") printf '~' ;;
+    "$HOME"/*) printf '~%s' "${1#"$HOME"}" ;;
+    *) printf '%s' "$1" ;;
+  esac
 }
 
 # swatch HEX [width] -- a block of colour, 4 cells unless told otherwise.
@@ -411,12 +432,15 @@ esac
 # the "source this to finish" line at the end names, and where the hsl autostart
 # would run from. Falls back to whichever rc IS being wired when the login shell
 # is something else (or was excluded with --shell).
+# SHELL_FOR_RC goes with it: which of the two shells actually READS that file.
+# Needed because the "source this to finish" step is only a valid instruction in
+# a shell that can parse it -- see print_next_steps().
 if [ "$LOGIN_SHELL" = zsh ] && [ "$WIRE_ZSH" -eq 1 ]; then
-  LOGIN_RC="$HOME/.zshrc"
+  LOGIN_RC="$HOME/.zshrc"; SHELL_FOR_RC=zsh
 elif [ "$WIRE_BASH" -eq 1 ]; then
-  LOGIN_RC="$HOME/.bashrc"
+  LOGIN_RC="$HOME/.bashrc"; SHELL_FOR_RC=bash
 else
-  LOGIN_RC="$HOME/.zshrc"
+  LOGIN_RC="$HOME/.zshrc"; SHELL_FOR_RC=zsh
 fi
 # Which shell to name in the "how do I get a plain login shell" escape hatch the
 # hsl notes print. Only the two this repo wires; anything else gets bash, which
@@ -1052,8 +1076,11 @@ SHELLS_DESC=""
 echo "  shells    $SHELLS_DESC  (login shell: $LOGIN_SHELL)"
 case "$LOGIN_SHELL" in
   bash|zsh|sh) ;;
-  *) echo "            NOTE: $LOGIN_SHELL is not one this repo can configure; the files"
-     echo "            above are still written, so 'bash' or 'zsh' will have everything." ;;
+  *) echo "            NOTE: your login shell is $LOGIN_SHELL, and this repo configures only"
+     echo "            bash and zsh -- so $LOGIN_SHELL gets no prompt, aliases or PATH."
+     echo "            Nothing is skipped otherwise: the tools still install and"
+     echo "            $(tilde "$LOGIN_RC") is still written, so '$SHELL_FOR_RC -l' has the lot."
+     echo "            To switch for good:  chsh -s \$(command -v $SHELL_FOR_RC)" ;;
 esac
 if [ "$HSL_LOGIN" = 1 ]; then
   echo "  login     hsl (herdr + status line) starts at every interactive login"
@@ -1154,7 +1181,17 @@ print_next_steps() {
   # shell will be: PATH, aliases, the prompt. Named for the shell this machine
   # actually logs into -- on a Mac that is ~/.zshrc, and "source ~/.bashrc"
   # there does precisely nothing.
-  steps+=("source $LOGIN_RC")
+  #
+  # ...unless the login shell is neither of the two, in which case `source` is
+  # the wrong instruction entirely: fish, csh and ksh all have their own syntax
+  # and none of them can read a bash rc -- pasted into fish, "source ~/.bashrc"
+  # is a screenful of parse errors. The install is fine and the NOTE further up
+  # already says so; what is needed here is a shell that CAN read what was
+  # written, so the step is to start one.
+  case "$LOGIN_SHELL" in
+    bash|zsh|sh) steps+=("source $LOGIN_RC") ;;
+    *)           steps+=("$SHELL_FOR_RC -l   # $LOGIN_SHELL cannot read $(tilde "$LOGIN_RC")") ;;
+  esac
 
   echo ""
   echo "Copy and paste this to finish:"
@@ -1413,6 +1450,19 @@ if [ -d "$DOTFILES/bin" ]; then
   done
 fi
 
+# Which checkout the copies above came from. bin/dotfiles is the CLI wrapper
+# around this script, reset.sh and lib/tools.sh, and being a plain copy is what
+# lets it outlive the checkout (that is the whole point for `dotfiles purge`) --
+# but it also means it carries no @PLACEHOLDER@ it could have been told the path
+# through. So the path is written beside it instead, and find_checkout() there
+# reads it. Written here rather than with the manifest so the pointer and the CLI
+# always land together; refreshed every run, so moving the checkout and re-running
+# is all it takes to re-point it. State, like the manifest, so it is not in
+# MANAGED -- reset.sh removes it explicitly.
+CHECKOUT_POINTER="$XDG_CONFIG/dotfiles/checkout"
+mkdir -p "$(dirname "$CHECKOUT_POINTER")"
+printf '%s\n' "$DOTFILES" > "$CHECKOUT_POINTER"
+
 # --- shell ---
 # Sourced by shellrc_additions.sh at the very end. Rendered rather than
 # symlinked straight out of the repo because it carries the answer (@HSL_LOGIN@)
@@ -1549,6 +1599,10 @@ printf '%s\n' "${MANAGED[@]}" | sort -u > "$MANIFEST"
 
 echo ""
 echo "Done. Notes:"
+echo "  - 'dotfiles' is now on PATH (~/.local/bin/dotfiles) and wraps all of this from"
+echo "    anywhere: 'dotfiles reconfigure', 'dotfiles update', 'dotfiles backups',"
+echo "    'dotfiles uninstall', 'dotfiles purge' (that last one deletes the checkout"
+echo "    too, after restoring the backups). 'dotfiles help' lists the lot."
 echo "  - Re-run './install.sh' any time after editing a *.in template; it reuses the"
 echo "    saved answers, so it re-renders without prompting. './install.sh --reconfigure'"
 echo "    changes the colours or machine name."

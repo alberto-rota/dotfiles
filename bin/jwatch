@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Slurm jobs at a glance -- the body of the prefix+j popup, in both worlds.
+#
+# tmux (tmux/.tmux.conf.in) and herdr (herdr/config.toml.in) both bind prefix+j
+# to a popup that runs this, which is the point of it being here rather than
+# inline in either config: the two bars are kept identical on purpose, and a
+# command spelled out twice is a command that drifts.
+#
+# It is also the safe way to hand herdr a compound command. herdr spawns a
+# keys.command popup through portable_pty and documents only that *Windows*
+# runs the string through `cmd.exe /d /c` -- nothing says a POSIX host gets a
+# shell, so `watch ...; jruns` as one config string may resolve as an
+# executable with a very strange name. A single executable always works.
+#
+# bin/ is plain-copied to ~/.local/bin by install.sh (not rendered, not
+# symlinked), so this needs no template placeholders and arrives on every
+# machine the dotfiles are installed on.
+set -u
+
+INTERVAL="${JWATCH_INTERVAL:-1}"
+
+# jqueue and jruns are cluster-local Slurm helpers -- deliberately not shipped
+# by this repo (see "Intentionally excluded" in CLAUDE.md), so on a laptop this
+# should say so calmly rather than flash a popup full of "command not found".
+missing=""
+for c in jqueue jruns; do
+  command -v "$c" >/dev/null 2>&1 || missing="$missing $c"
+done
+if [ -n "$missing" ]; then
+  echo "jwatch: no Slurm helpers on this machine (missing:$missing)"
+  echo
+  echo "jqueue/jruns are cluster-local; there is nothing to show here."
+  # A popup that closes instantly is indistinguishable from a broken keybinding,
+  # so hold it open long enough to read. Falls back to a sleep with no stdin.
+  if [ -t 0 ]; then
+    read -r -p "press enter to close " _ || true
+  else
+    sleep 4
+  fi
+  exit 0
+fi
+
+if ! command -v watch >/dev/null 2>&1; then
+  # procps is not everywhere (a slim container, macOS without coreutils/procps).
+  # One shot is still more useful than nothing.
+  jruns; jqueue
+  if [ -t 0 ]; then read -r -p "press enter to close " _ || true; fi
+  exit 0
+fi
+
+# -c keeps the helpers' own colour; running jobs first, then the queue, so the
+# thing you are usually looking for is at the top.
+exec watch -c -n "$INTERVAL" 'jruns; jqueue;'

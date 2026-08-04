@@ -1,366 +1,63 @@
 # dotfiles
 
-Personal machine config, synced across machines. On a brand new machine, one
-line is the whole thing:
+tmux, Claude Code, oh-my-posh, [herdr](https://github.com/smarzban/herdr) and a
+pile of portable shell additions, kept in step across a laptop, a workstation and
+a couple of HPC login nodes. On a machine with nothing on it, one line is the
+whole thing:
 
 ```
 curl -fsSL albertorota.dev/setmeup.sh | bash
 ```
 
-There is no checkout to run from at that point, so the script clones this
-repo to `~/dotfiles` and hands over to the copy inside it — then carries on
-exactly as a local run would. Run the same line on a machine that already has
-that checkout and it pulls instead of cloning: `git pull --ff-only`, or a
-refetch of the tarball if this is a machine that had no git when it was set
-up. A directory that is neither is left completely alone. (No git yet? It
-falls back to a release tarball; git itself is one of the tools it installs.)
-Pass options through with `bash -s --`, and override where it lands with
-`DOTFILES_DIR`:
+There is no checkout to run from at that point, so the script clones this repo to
+`~/dotfiles` and hands over to the copy inside it. Run the same line on a machine
+that already has that checkout and it pulls instead of cloning. No git yet? It
+falls back to a release tarball — git is itself one of the tools it installs.
+Options go through with `bash -s --`, and `DOTFILES_DIR` moves where it lands.
 
-```
-curl -fsSL albertorota.dev/setmeup.sh | bash -s -- --no-tools
-curl -fsSL albertorota.dev/setmeup.sh | DOTFILES_DIR=~/cfg bash
-```
+From a clone it is just `./install.sh`.
 
-From a clone it's just `./install.sh`. Either way it installs
-[uv](https://astral.sh/uv) first, opens a small setup UI to pick the two
-accent colours, the machine name, which status line components to show, how
-oh-my-posh applies its accents and which tools to put on the machine — with
-live previews of the prompt, the status bars, herdr and the install plan —
-then installs the lot (idempotent, backs up any real file it would overwrite
-as `<file>.bak` — and never writes over a backup it already made).
+## Setting a machine up
 
-```
-./install.sh                 # prompts on the first run, reuses the answers after
-./install.sh --reconfigure   # change the colours / machine name / tool selection
-./install.sh --primary '#78dce8' --secondary '#ffd866' --machine proxima -y
-./install.sh --skip-uv       # don't install/update uv (offline machines, CI)
-./install.sh --shell zsh     # wire up only zsh (auto | bash | zsh | both)
-./install.sh --no-tui        # plain text wizard instead of the setup UI
-./install.sh --no-tools      # render and link config only, install nothing
-./install.sh --tools-only    # install tools only, render and link nothing
-./install.sh --help
-./reset.sh                   # undo: remove everything install.sh put in place
+`./install.sh` installs [uv](https://astral.sh/uv) first, because the setup UI
+*is* a uv script, and then opens it:
 
-bash lib/tools.sh --plan     # what a tools run would do here, without doing it
-```
+![the setup UI](demo/setup.gif)
 
-### Linux and macOS
+Two accent colours, the machine name, which pills belong in the status bars, how
+oh-my-posh spends the accents, and which tools to put on the machine. `tab`
+between fields, arrows in the palette, `p`/`s` to pick which accent the arrows
+move, `space` to toggle, `ctrl+s` to install, `esc` to quit. A machine without
+uv, or without the network to fetch it, falls back to a plain text wizard, so an
+offline box can still be set up.
 
-Both work, from the same one-liner. What differs on a Mac:
+The panes on the right are the real thing rather than a drawing of it. The prompt
+is `oh-my-posh print` on a rendered copy of the actual template, in the actual
+git state. The status bar is the string `lib/derive.sh` assembles — the same
+function that renders the installed config — with its `#(...)` segments really
+executed, so that GPU pill is this machine's `nvidia-smi`. The Claude Code line
+is the rendered status line script run against a sample payload. The install plan
+is `lib/tools.sh --plan`, the same route resolution the installer performs, so
+the pane cannot promise a route the run would not take. Only the herdr box is
+drawn, because herdr has no way to render one frame into a string.
 
-- **Homebrew is the system package manager**, where apt is on Linux — so it is
-  installed when something selected needs it, rather than only as a last
-  resort. With admin that is the official installer, which also brings in the
-  Xcode Command Line Tools (and therefore **git**, which has no other route
-  there). Without admin it is a clone under `~/homebrew`, which works but
-  builds formulae from source, so `--plan` says so before you commit to it.
-- **Tailscale** comes from the brew formula and needs
-  `sudo brew services start tailscale` afterwards — there is no darwin tarball
-  and the official install script does not run on macOS. The final
-  copy-and-paste block tells you.
-- **nvtop is skipped**, as "not applicable" rather than "failed".
-- **`~/.bash_profile`**, if you already have one, gets a line sourcing
-  `~/.bashrc`. bash reads only the *first* of `~/.bash_profile`,
-  `~/.bash_login`, `~/.profile`, and Terminal.app opens a login shell for
-  every window — so without that the install is in place and nothing loads it.
-  A `~/.bash_profile` is never *created*: that would shadow the `~/.profile`
-  this repo links.
-- **The machine name defaults are cleaned up rather than rejected**, since
-  macOS hostnames come with apostrophes, spaces and more than 24 characters.
+The palette is 48 colours as six rows of eight, and each row is one real scheme —
+monokai, catppuccin, dracula, nord, tokyonight, neon — so *which row* is itself
+part of the choice. Only the accent ramps are in there, never the backgrounds:
+the primary gets used as a background with black text on it, so a dark entry
+would be illegible where it matters. Any `#rrggbb` works if none of the 48 suit.
 
-Everything here runs under **bash 3.2**, which is what `/bin/bash` is on macOS
-— so `curl … | bash` needs nothing installed first.
+Answers land in `~/.config/dotfiles/theme.env` and are reused, which is what
+makes a later `./install.sh` a no-prompt re-render.
 
-### bash and zsh
+## What it does to the machine
 
-macOS has logged people into **zsh** since Catalina and most Linux boxes into
-**bash**, so both are configured. There is one shared file,
-`shell/shellrc_additions.sh`, sourced from `~/.bashrc` and `~/.zshrc` alike; it
-works out which shell is reading it and branches only where the two genuinely
-differ — `oh-my-posh init bash` vs `zsh`, readline `bind` vs ZLE `bindkey`,
-`~/.fzf.bash` vs `~/.fzf.zsh`, and `compinit` (zsh has no completion at all
-until something runs it, and nothing else will).
+![install.sh rendering and linking](demo/install.gif)
 
-Which rc files get the line is detected, not assumed: bash always, plus zsh
-when it is your login shell or a `~/.zshrc` already exists. `--shell
-bash|zsh|both` overrides that. zsh reads neither `~/.bashrc` nor `~/.profile`,
-which is why it needs its own line — and why a Mac set up by an earlier version
-of this repo looked like nothing had installed.
-
-### The setup UI
-
-`tui/configure.py` is a [Textual](https://textual.textualize.io) app with
-its dependencies declared in a PEP 723 header, so `uv run --script` fetches
-Python and Textual itself — that is the whole reason install.sh puts uv on
-the machine before anything else. uv lands in `~/.local/bin` (or
-`$UV_INSTALL_DIR`/`$XDG_BIN_HOME` if set) and is put on PATH permanently
-through `~/.config/dotfiles/uv-env.sh`, which `shell/shellrc_additions.sh`
-sources. The installer is run with `INSTALLER_NO_MODIFY_PATH=1` on purpose:
-left to itself it appends a PATH line to `~/.profile`, which on an
-already-installed machine is a symlink into *this repo*.
-
-The previews are the real thing, not drawings of it:
-
-- **oh-my-posh** — `oh-my-posh print` on a rendered copy of the real
-  template, in the current directory and git state.
-- **herdr-statusline** — the status string `lib/derive.sh` assembles (the
-  same one rendered into the real config), interpreted by a small
-  tmux-format renderer, with the `#(...)` segments actually executed: the
-  GPU pill really is this machine's `nvidia-smi`. tmux's bar is built from
-  the same toggles by the same code, so it isn't previewed separately.
-- **claude code status line** — the rendered status line script itself, run
-  against a sample statusLine payload.
-- **herdr** — the one drawing, since herdr cannot render a frame into a
-  string; the accent and the darkened `surface_dim` in it are the real
-  derived values.
-- **install plan** — `lib/tools.sh --plan`, the same route resolution the
-  installer performs, so the pane cannot promise a route it would not take.
-  It updates as you deselect tools: turn off Rust and watch eza/fd/bat/delta
-  fall from `cargo` to `brew` (or to blocked, if you turn that off too).
-
-Everything is keyboard-driven: `tab` between fields, `←`/`→`/`↑`/`↓` or
-`1`-`8` in the palette, `p`/`s` to switch which accent the palette moves,
-`←`/`→`/`enter` to cycle a choice row, `space` to toggle a checkbox, `ctrl+s`
-to install, `esc` to quit. Machines without uv (or without the network to
-fetch it) fall back to the original text wizard, so an offline machine can
-still be set up.
-
-### The palette
-
-48 colours, as six rows of eight — and each row is one real scheme, so
-"which row" is itself the choice:
-
-| | |
-|---|---|
-| monokai | this repo's own identity |
-| catppuccin | mocha accents |
-| dracula | |
-| nord | frost, then the warmer aurora half |
-| tokyonight | |
-| neon | where the defaults come from |
-
-Only each scheme's *accent* ramp is included, never its backgrounds or
-greys: the primary gets used as a **background with black text on it** (both
-status bars, the Claude Code bubbles), so a dark entry would be illegible
-there. The near-whites (`dracula/snow`, `nord/snow`) are the deliberate
-low-saturation option — saturation is passed through untouched, so those
-give grey pills rather than invented colour. Any `#rrggbb` still works if
-none of the 48 suit.
-
-Rather than a 48-line menu, the setup UI shows one grid for **both** accents
-at once, marked `P` and `S` in place (`PS` if you set them the same), with
-`p`/`s` choosing which one the arrows move. The text wizard asks in two
-steps: scheme first (six rows of swatches, `<-` on the one you are on), then
-the colour inside it.
-
-### hsl at login
-
-Optionally, `hsl` — herdr with the status line — starts at every interactive
-login. **Off by default**, because it is the one setting that changes what
-opening a terminal does, and getting it wrong on a machine you only reach
-over ssh is worse than any wrong colour.
-
-It is run rather than `exec`ed, so quitting herdr leaves you in a normal
-shell, and `NO_HSL=1 bash -l` (or `zsh -l`) skips it outright. It also declines
-to start when it would be wrong or recursive: inside herdr already (every pane
-herdr spawns re-runs the shell rc), inside tmux, inside an AI agent's shell, on a
-non-interactive shell, under an ssh forced command, with `TERM=dumb`, or
-when `hsl` isn't installed — it ships with the herdr-statusline plugin.
-
-Both front-ends are built to fit the terminal rather than wrap in it: a
-wrapped status bar is a lie about what the bar looks like. Content is clipped
-to the width instead, panes size themselves from the space they have, the
-palette narrows its swatches (keeping the scheme names in full) and the
-sample bar drops pills from the right the way tmux does. Below 88 columns the
-setup UI stacks its two panels instead of squeezing them. It stays readable
-down to about 60 columns, and usable well below that — the one thing that can
-still outgrow a very narrow terminal is oh-my-posh's own prompt, which would
-do that on its own account anyway.
-
-Answers are saved to `~/.config/dotfiles/theme.env`, so later runs re-render
-without prompting — which is what you want after editing a template. Add `-y`
-to guarantee no prompt (for a scripted or headless run).
-
-Before install.sh symlinks or copies over a path, if a real (non-symlink) file
-is already there it gets moved aside to `<file>.bak` first — so nothing you had
-before is ever lost, and only the very first run backs it up (a second run
-sees its own symlink/copy there instead and leaves the `.bak` alone). A
-backup is never written over: if a real file turns up at a path that already
-has a `.bak` — you replaced a symlink with one of your own, then re-ran —
-it is filed as `.bak.2`, and the original stays where it is. Every
-path it manages is recorded in `~/.config/dotfiles/manifest.txt`.
-`./reset.sh` reads that manifest, removes everything on it, restores each
-path's `.bak` if one exists, and strips the block it added to `~/.bashrc` and
-`~/.zshrc` —
-bringing the machine back to how it looked before `./install.sh` ever ran.
-Reset undoes *config*, not the software: tools stay installed, and each has
-its own uninstall.
-
-### The tools
-
-Everything in the catalogue is **on by default** — deselect what you don't
-want, in the setup UI's checkbox list or by typing numbers in the text
-wizard. The answers persist per machine like the colours do, and a tool
-added to the catalogue later switches itself on (an absent answer means yes).
-
-| | |
-|---|---|
-| shell | oh-my-posh, jq, zoxide, eza, fzf, fd, bat, delta, glow |
-| network | Tailscale |
-| gpu | nvtop, nvitop |
-| editor | Neovim + the LazyVim starter |
-| python (uv tools) | gdown, ground-control-tui |
-| herdr | herdr, herdr-statusline, herdr-file-viewer |
-| toolchains | git, Rust (rustup/cargo), Homebrew — only if something needs it |
-
-Tailscale is installed but **not** connected: `tailscale up` opens a browser to
-authenticate the machine, so it is left to you. The run ends with a single
-copy-and-paste block containing everything still outstanding — the `PATH`
-export for the shell you are in, the Tailscale step if one is needed, and a
-`source` of your login shell's rc — so finishing is one paste rather than a
-hunt through the output:
-
-```
-Copy and paste this to finish:
-
-    export PATH="/home/you/.local/bin:$PATH"
-    sudo tailscale up
-    source /home/you/.bashrc
-```
-
-Without root, Tailscale still installs (static binaries) and the block gives
-the userspace-networking commands to run the daemon under `$HOME` instead.
-
-oh-my-posh and jq are fetched *before* the setup UI opens, because its
-preview panes are the real prompt and the real Claude status line — without
-those two they degrade to a hand-drawing and a "needs jq" apology. That
-pre-pass never asks for a password (both have routes that need no sudo) and
-is harmless if it fails.
-
-**Sudo is detected, not assumed.** install.sh works out whether you are root,
-have passwordless sudo, are a sudoer who has to type a password, or have no
-sudo at all — and picks routes accordingly. With privilege it uses the system
-package manager (apt on Linux, Homebrew on macOS); without, everything lands
-in `$HOME` via rustup/cargo, `uv tool install`, release tarballs or git
-clones. There is no separate unprivileged installer, just a route list whose
-first entry drops out. On an HPC login node that means it all still works,
-unattended.
-
-If a password is needed you are asked **once**, up front, before anything
-runs — not repeatedly in the middle of the install. Say no and it falls back
-to the userland routes rather than failing. With no terminal to ask on
-(`curl | bash`, CI, `-y`) it doesn't try.
-
-A few deliberate choices: Neovim comes from the official tarball rather than
-apt, because apt's 0.9.5 is old enough that LazyVim complains about it;
-LazyVim refuses to touch a `~/.config/nvim` that already has files in it;
-Homebrew is only bootstrapped when it is the *sole* route to something you
-actually selected (on Linux, in practice `nvtop` on a box with no apt; on
-macOS, git or Tailscale); and on Debian and Ubuntu, where the packages are
-called `batcat` and `fdfind`, `shellrc_additions.sh` aliases them back to
-`bat` and `fd` — but only when the real binaries aren't there, so a cargo or
-brew install isn't shadowed.
-
-Nothing in the phase is fatal. A tool that fails is reported and the run
-carries on; re-run `./install.sh` to retry it. Anything with no route on this
-machine is listed as blocked rather than silently skipped.
-
-New tools land on PATH permanently through
-`~/.config/dotfiles/tools-env.sh` (sourced by `shellrc_additions.sh`, same
-shape as `uv-env.sh`). For the terminal you ran the install in, install.sh
-prints a copy-paste `export PATH=...` at the end.
-
-## Layout
-
-- `tmux/` — `.tmux.conf.in` (mouse mode on by default, accent-coloured
-  borders/status bar, popups) plus the two scripts it shells out to for
-  the status bar: `other-sessions.sh` (session list), `slurm-status.sh`
-  (Slurm job status — degrades to "no jobs" if `squeue` isn't available),
-  and the shared `gpu-status.sh` (see herdr-statusline below). Which of the
-  host/GPU/temperature/Slurm/date-time pills actually show is chosen in the
-  install.sh wizard, not hardcoded here.
-- `claude/` — Claude Code global `settings.json`, `keybindings.json`,
-  `statusline-command.sh.in`, and custom themes (`themes/*.json`).
-  Per-project Claude settings (`settings.local.json`, project `.claude/`
-  dirs) are **not** synced here — those stay per-project. The status line's
-  five bubbles are a primary→secondary ramp (HSL, shorter hue arc,
-  lightness floored so the black bubble text stays readable).
-- `herdr/` — the terminal workspace manager's `config.toml.in` (keybindings,
-  sidebar rows, theme overrides) plus its plugin configs under `plugins/`:
-  - `herdr-file-viewer` — third-party plugin; only its config
-    (`config.toml.in`, a **template** for `@HERDR_CONFIG@`, because the
-    glow style argument has to be an absolute path) and its Monokai glow
-    palette (`markdown-monokai.json`) are synced. The plugin itself is
-    installed per machine with `herdr plugin install
-    smarzban/herdr-file-viewer`. Its content pane wants `bat`, `delta` and
-    `glow` on PATH, all three themed Monokai; without them the viewer
-    degrades to plain text.
-  - `herdr-statusline` — config + `gpu-status.sh.in`, reproducing the tmux
-    status bar (same components, same SHOW_* toggles) inside a herdr
-    session. Its Slurm and GPU scripts are the very same rendered files
-    tmux uses, symlinked a second time, so the two bars can't drift apart.
-  - `herdr-workspace-prefix` — a herdr plugin whose code *is* tracked here
-    (`herdr-plugin.toml` + `tag-workspaces.py`); linked into herdr with
-    `herdr plugin link` rather than installed from GitHub.
-- `oh-my-posh/` — the active prompt theme, `albe-monokai2.omp.json`. Each
-  accented part of it — the leading glyph, the machine text, and the bottom
-  chevrons for exit 0 and for errors — separately picks the primary, the
-  secondary or a neutral foreground. The glyph can instead be set to
-  *slurm* mode, where it reports the allocation: primary on a normal shell,
-  secondary inside a job.
-- `shell/` — portable additions layered on top of each machine's own
-  `.bashrc`/`.zshrc`/`.profile`:
-  - `shellrc_additions.sh` — aliases, PATH additions, oh-my-posh/zoxide/fzf
-    init, key bindings, env vars. **One file for bash and zsh**, which
-    branches on whichever is reading it. Sourced from the tail of `~/.bashrc`
-    and `~/.zshrc` (install.sh appends one `source` line to each, guarded by a
-    marker comment).
-  - `bashrc_additions.sh` — a four-line redirect to the above, kept only so a
-    machine set up before the rename keeps working until install.sh is re-run
-    there. Deletable once every machine has had a run.
-  - `bashrc_functions` — shell functions (currently just `syncop`, a
-    generic rsync-between-machines helper), sourced by `shellrc_additions.sh`.
-  - `profile` — symlinked directly to `~/.profile`.
-- `lib/derive.sh` — everything computed *from* the answers: the palette, the
-  validators, `PRIMARY_DIM`, the `OMP_*` colours and the four assembled status
-  line strings. install.sh sources it; the setup UI executes it and parses its
-  output, so the preview and the rendered config can never disagree.
-- `lib/tools.sh` — the other half of the same split: what gets **installed**
-  rather than configured. The catalogue, the sudo detection and every install
-  route live here, and the setup UI runs it (`--list`, `--plan`, `--priv`) for
-  its checkbox list and its install-plan pane — so, again, the preview and the
-  real thing are one piece of code. Adding a tool means editing this file only.
-- `tui/configure.py` — the setup UI (see above).
-- `bin/` — scripts to drop on every machine. install.sh copies everything here
-  into `~/.local/bin` (plain copies, not symlinks, and not templated — this is
-  for your own scripts, not machine-specific config, and not for the tools in
-  the catalogue above, which have real installers). Currently empty; add files
-  here to have them installed.
-
-## Intentionally excluded (machine/cluster-specific)
-
-- Conda `init` block (install path differs per machine — run
-  `conda init bash` fresh instead).
-- Google Cloud SDK sourcing (path was specific to one cluster workspace mount).
-- Workspace aliases like `twist`, `unref`, `gate`, etc. (point at
-  `/anvme/workspace/...` paths that only exist on that HPC cluster).
-- `jn_tunnel` alias (assumes an SSH host alias `elcap` is configured
-  locally — set that up per-machine in `~/.ssh/config` if you want it).
-- herdr's machine-local state: `plugins.json` (the install registry, with
-  absolute paths and a resolved commit), `plugins/github/` (the plugin
-  clone and its `target/` build output), `session.json`, the sockets and
-  the logs. herdr rewrites all of these itself.
-- The `fusermount3` -> `fusermount` symlink shim (workaround specific to
-  one cluster's FUSE setup).
-
-## Templates and `.generated/`
-
-Anything carrying a colour or the machine name is a `*.in` **template** with
-`@PRIMARY@` / `@SECONDARY@` / `@MACHINE@` placeholders, because none of
-tmux.conf, JSON or TOML can indirect through a variable. `install.sh` renders
-every template into `.generated/` (gitignored) and points the real config path
-at the rendered copy:
+Anything carrying a colour or the machine name is a `*.in` template with
+`@PRIMARY@`-style placeholders, because none of tmux.conf, JSON or TOML can
+indirect through a variable. install.sh renders each one into `.generated/`
+(gitignored) and points the real config path at the rendered copy:
 
 ```
 tmux/.tmux.conf.in                 tracked, has @PRIMARY@
@@ -368,49 +65,170 @@ tmux/.tmux.conf.in                 tracked, has @PRIMARY@
        <- ~/.tmux.conf             symlink
 ```
 
-So `~` still shows what is dotfiles-managed, tracked files stay free of
-machine-specific values, and re-running `install.sh` updates live config.
-**Edit the `.in` file, never the rendered one** — renders are overwritten and
-carry a "GENERATED" header (except JSON, which has no comment syntax).
+So `~` still shows you what is managed, tracked files stay free of
+machine-specific values, and re-running the installer updates live config.
+**Edit the `.in` file, never the rendered one.**
 
-Templated: `tmux/.tmux.conf`, `tmux/other-sessions.sh`, `tmux/slurm-status.sh`,
-`oh-my-posh/albe-monokai2.omp.json`, `herdr/config.toml`,
-`claude/themes/*.json`, `herdr/plugins/herdr-file-viewer/config.toml`
-(that last one for `@HERDR_CONFIG@`, not colours), and
-`herdr/plugins/herdr-statusline/{config.toml,gpu-status.sh}`. Everything
-else is symlinked straight out of the repo.
+Before it takes a path over, any real file already sitting there is moved aside
+to `<file>.bak`, and only ever on the first run — a second run finds its own
+symlink and leaves the backup alone. A backup is never written over: a real file
+turning up at a path that already has a `.bak` is filed as `.bak.2`, and the
+original stays put. Every path it touches is recorded in
+`~/.config/dotfiles/manifest.txt`.
 
-Values the installer computes rather than asks for directly:
+## The `dotfiles` command
 
-- `@MACHINE_LOWER@` — lowercased, for the oh-my-posh prompt and the Claude
-  theme name, where the display casing would look wrong.
-- `@PRIMARY_DIM@` — the primary scaled 50% toward black, for herdr's sidebar
-  rail. herdr has no dedicated border colour (the whole `[theme.custom]` set is
-  `surface_dim`, `text`, `accent`, `green`, `yellow`, `red`, `peach`, `mauve`,
-  `blue`, `teal`), and that one `surface_dim` token paints the rail *and* the
-  selected row's background. Since the workspace names are primary-coloured they
-  sit on it when selected, so the rail cannot be the raw primary — that would be
-  green-on-green. At 50% it measures ~3.8:1 for the bold row text and ~2.8:1 for
-  the rail against the gruvbox panel.
-- `@TMUX_STATUS_LEFT@` / `@TMUX_STATUS_RIGHT@` / `@HSL_STATUS_LEFT@` /
-  `@HSL_STATUS_RIGHT@` — the fully assembled tmux and herdr-statusline bar
-  strings, built by `lib/derive.sh` from the `SHOW_HOST` / `SHOW_GPU` /
-  `SHOW_TEMP` / `SHOW_SLURM` / `SHOW_DATETIME` answers. tmux.conf and
-  herdr's TOML have no conditional syntax to gate a segment on, so the
-  conditional logic lives in `derive.sh` and each template just holds one
-  placeholder for the whole bar half.
-- `@OMP_ICON_COLOR@` / `@OMP_ICON_COLOR_JOB@` / `@OMP_TEXT_COLOR@` /
-  `@OMP_CHEVRON_FG@` / `@OMP_CHEVRON_ERR@` — the oh-my-posh machine segment's
-  glyph (outside and inside a Slurm job shell) and text colour, and the bottom
-  chevrons for exit 0 and for errors. Each resolves the `OMP_ICON` / `OMP_TEXT`
-  / `OMP_CHEVRON_OK` / `OMP_CHEVRON_ERROR` answer — `primary`, `secondary` or
-  `neutral` (`#d6deeb`) — to a hex value. Answers saved as the older
-  `OMP_COLOR_*` booleans are migrated to their equivalent.
-- `@SHOW_TEMP@` — passed straight through into `gpu-status.sh.in` so the GPU
-  pill can omit just the temperature reading, independent of the pill itself.
+Installing puts a `dotfiles` CLI on PATH, so none of this needs the checkout to
+be your working directory ever again:
 
-- `@CLAUDE_MODEL_RGB@` / `@CLAUDE_EFFORT_RGB@` / `@CLAUDE_USAGE_RGB@` /
-  `@CLAUDE_WEEK_RGB@` / `@CLAUDE_CTX_RGB@` — the Claude Code status line's five
-  bubbles, ramped from the primary to the secondary by `claude_ramp()`. They
-  used to be a fixed palette of their own (blue/purple/pink/orange/teal); the
-  bar now belongs to the same two accents as everything else.
+![dotfiles help](demo/cli.gif)
+
+It is a wrapper, not a second implementation — every subcommand runs
+`install.sh`, `reset.sh` or `lib/tools.sh` out of the checkout, and options after
+the command pass straight through, so `dotfiles install --no-tools` does what you
+would expect. It finds the checkout from `$DOTFILES_DIR`, then
+`~/.config/dotfiles/checkout` (one line, rewritten by every install), then
+`~/dotfiles`.
+
+Two worth knowing before you type them. **`dotfiles uninstall` removes the
+`dotfiles` command too** — it is one of the paths install.sh created, so it goes
+with the rest; `bash ~/dotfiles/install.sh` brings it all back. And **`dotfiles
+purge` is the destructive one**: uninstall, and *then* delete the checkout and
+the saved answers. Its order is the point — `reset.sh` lives inside the directory
+being deleted, so it runs and finishes first, while it still exists. It refuses
+outright if the repo has uncommitted or unpushed work, which is the one thing
+here that no reinstall can recover.
+
+## Taking it back off
+
+![dotfiles uninstall](demo/undo.gif)
+
+`reset.sh` reads the manifest back, removes everything on it, restores each
+path's `.bak`, and strips the block it added to `~/.bashrc` and `~/.zshrc`.
+Numbered backups it reports and leaves alone — choosing between several saved
+files is a human's job.
+
+It undoes *config*, not software: the tools stay installed, and each has its own
+uninstall. `theme.env` and `.generated/` are left alone too, since the answers
+are not part of the installation.
+
+## The tools
+
+Everything in the catalogue is on by default; deselect what you don't want in the
+setup UI's checkbox list. The answers persist per machine like the colours do,
+and a tool added later switches itself on, since an absent answer means yes.
+
+| | |
+|---|---|
+| shell | tmux, oh-my-posh, jq, zoxide, eza, fzf, fd, bat, delta, glow, dua-cli |
+| network | Tailscale |
+| gpu | nvtop, nvitop |
+| editor | Neovim + LazyVim, Claude Code |
+| python | gdown, ground-control-tui (`uv tool install`) |
+| herdr | herdr, herdr-statusline, herdr-file-viewer |
+| toolchains | git, Rust, a C toolchain, Homebrew, conda-forge — each only if something needs it |
+
+**Sudo is detected, not assumed.** install.sh works out whether you are root,
+have passwordless sudo, are a sudoer who has to type a password, or have no sudo
+at all, and picks routes accordingly. With privilege it uses the system package
+manager; without, everything lands in `$HOME` through rustup/cargo, `uv tool
+install`, release tarballs, git clones or conda-forge. There is no separate
+unprivileged installer — just one route list whose first entry drops out. If a
+password is needed you are asked once, up front, and saying no falls back to the
+userland routes rather than failing.
+
+That last route is what made git and tmux possible without privilege at all.
+Both ship as source only, and a machine with no git also has no fzf, no LazyVim
+and no way to bootstrap Homebrew, so a bare no-sudo box used to come out with
+half the catalogue blocked. conda-forge, reached through micromamba — one static
+binary at a fixed URL, no privilege, no Python, nothing to unpack — takes that
+from 13 blocked entries to 2. It is deliberately a last resort, behind apt, cargo
+and an already-installed Homebrew, and only appears when something you selected
+has no other route; on a machine with apt the plan just says *not needed on this
+machine*.
+
+Nothing in the phase is fatal. A failed tool is reported and the run carries on.
+Anything with no route here is listed as blocked, with the reason, rather than
+quietly skipped. `bash lib/tools.sh --plan` shows what a run would do without
+doing it.
+
+Tailscale installs but is not connected: `tailscale up` opens a browser to
+authenticate the machine, so that is left to you. The run ends with a single
+copy-and-paste block holding whatever is still outstanding — the `PATH` export
+for the shell you are in, the Tailscale step if there is one, and a `source` of
+your login shell's rc.
+
+## Two shells, two platforms
+
+bash and zsh are both configured from one file, `shell/shellrc_additions.sh`,
+sourced from `~/.bashrc` and `~/.zshrc` alike; it works out which shell is
+reading it and branches only where the two genuinely differ. Which rc files get
+the line is detected rather than assumed — bash always, zsh when it is your login
+shell or a `~/.zshrc` already exists — and `--shell bash|zsh|both` overrides
+that. zsh reads neither `~/.bashrc` nor `~/.profile`, which is why it needs its
+own line, and why a Mac set up by an earlier version of this looked like nothing
+had installed at all.
+
+A login shell that is neither (fish, csh, ksh) degrades loudly rather than
+silently: every tool still installs, `~/.bashrc` is still written, and the run
+tells you `bash -l` has the full setup and gives the `chsh` line if you want to
+move over.
+
+Linux and macOS both work from the same one-liner. On a Mac, Homebrew is the
+system package manager rather than a last resort, Tailscale comes from the
+formula and needs `sudo brew services start tailscale`, nvtop is skipped as *not
+applicable* rather than failed, and hostnames with apostrophes and spaces in them
+are cleaned up rather than rejected. Everything here runs under **bash 3.2**,
+which is what `/bin/bash` is on macOS, so `curl … | bash` needs nothing installed
+first.
+
+## Layout
+
+- `tmux/`, `oh-my-posh/`, `claude/`, `herdr/` — the config itself, `.in` where it
+  carries a colour. `claude/` is Claude Code's *global* settings, keybindings,
+  themes and status line; per-project settings stay per-project.
+- `shell/` — additions layered on top of each machine's own rc files, not a
+  replacement for them.
+- `lib/derive.sh` — everything computed *from* the answers: the palette, the
+  validators, the assembled status-line strings. install.sh sources it, the setup
+  UI executes it and parses the output, which is why the preview and the
+  installed config cannot disagree.
+- `lib/tools.sh` — the other half of that split: what gets **installed** rather
+  than configured. The catalogue, the sudo detection and every route live here.
+  Adding a tool means editing this one file.
+- `tui/configure.py` — the setup UI. A PEP 723 uv script, so nothing has to be
+  installed by hand and nothing is left behind.
+- `bin/` — scripts plain-copied to `~/.local/bin`. Drop a file in to have it
+  installed everywhere.
+- `demo/` — the recordings below, and the tapes that make them.
+
+Deliberately **not** here, because they are specific to one machine or one
+cluster: the conda `init` block, Google Cloud SDK sourcing, the
+`/anvme/workspace/...` aliases, the `jn_tunnel` ssh alias, herdr's own local state
+(it rewrites that itself), and a `fusermount3` shim for one cluster's FUSE setup.
+
+There is no build, no test suite and no linter — this repo *is* the config. To
+check a change, run `./install.sh` (it is idempotent) and look at `.generated/`.
+The long version of why any of this is shaped the way it is lives in
+`CLAUDE.md`.
+
+## The recordings
+
+`demo/record.sh` re-records every GIF in `demo/` with
+[vhs](https://github.com/charmbracelet/vhs):
+
+```
+demo/record.sh              # all of them
+demo/record.sh setup cli    # just those two
+```
+
+It needs `vhs` plus what vhs shells out to (`ttyd`, `ffmpeg`, and a headless
+Chromium it can find), and a Nerd Font installed — the prompt and both status
+bars are mostly powerline glyphs, and without one every tape records a wall of
+tofu.
+
+The tapes run the real install.sh, the real setup UI and the real CLI, which is
+what makes them worth having, so each one runs against a **throwaway HOME**
+rebuilt from scratch before every take. That is why the paths on screen say
+`/tmp/dfdemo`, and why nothing you see being installed or uninstalled is
+happening to the machine doing the recording.

@@ -1,0 +1,305 @@
+#!/usr/bin/env bash
+# The dotfiles CLI -- one command on PATH for everything you would otherwise
+# have to cd into the checkout to do.
+#
+#     dotfiles reconfigure     # change colours / machine name / tool selection
+#     dotfiles update          # pull, then re-render and re-link
+#     dotfiles backups         # what install.sh saved before taking a path over
+#     dotfiles uninstall       # reset.sh: undo the install, restore the backups
+#     dotfiles purge           # ...and then delete the checkout itself
+#
+# This is NOT a second implementation of any of that: every subcommand shells
+# out to install.sh, reset.sh or lib/tools.sh in the checkout, so there is still
+# exactly one installer and one uninstaller. What lives here is only the part
+# that cannot: finding the checkout from outside it, and the ordering and the
+# guards that make `purge` safe (backups restored BEFORE the directory holding
+# reset.sh goes away, and a refusal when the repo has work in it that exists
+# nowhere else).
+#
+# bin/ is plain-copied to ~/.local/bin by install.sh -- not symlinked, not
+# rendered -- which is exactly what this file needs: a copy keeps working when
+# the checkout moves, and `purge` must survive the checkout being deleted from
+# under it. It also means there is no @PLACEHOLDER@ to point at the checkout
+# with, hence the pointer file that install.sh writes and find_checkout() reads.
+#
+# bash 3.2 (macOS) throughout: no associative arrays, no ${var,,}, no mapfile.
+set -eu
+
+XDG_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}"
+STATE_DIR="$XDG_CONFIG/dotfiles"
+# Written by install.sh alongside this very copy of the CLI, so a `dotfiles` on
+# PATH always has a pointer beside it saying which checkout put it there.
+POINTER="$STATE_DIR/checkout"
+MANIFEST="$STATE_DIR/manifest.txt"
+
+SELF="$(basename "$0")"
+
+die() { echo "$SELF: $*" >&2; exit 1; }
+
+# Same two-file test install.sh's own bootstrap uses, for the same reason: it
+# tells a checkout of this repo from any other directory that happens to exist.
+is_checkout() { [ -r "$1/install.sh" ] && [ -r "$1/lib/derive.sh" ]; }
+
+# Where the checkout is. $DOTFILES_DIR wins (it is the same override install.sh
+# takes, so a machine with the repo somewhere unusual needs no second setting),
+# then the pointer install.sh wrote, then the default location -- which covers a
+# checkout that was cloned by hand and never installed from.
+find_checkout() {
+  local d=""
+  if [ -n "${DOTFILES_DIR:-}" ] && is_checkout "$DOTFILES_DIR"; then
+    printf '%s' "$DOTFILES_DIR"; return 0
+  fi
+  if [ -r "$POINTER" ]; then
+    # `|| true` because read returns non-zero on a final line with no newline,
+    # and this script runs under set -e.
+    IFS= read -r d < "$POINTER" || true
+    if [ -n "$d" ] && is_checkout "$d"; then printf '%s' "$d"; return 0; fi
+  fi
+  if is_checkout "$HOME/dotfiles"; then printf '%s' "$HOME/dotfiles"; return 0; fi
+  return 1
+}
+
+need_checkout() {
+  DOTFILES="$(find_checkout || true)"
+  [ -n "$DOTFILES" ] || die "no dotfiles checkout found.
+  Looked at: \$DOTFILES_DIR, $POINTER, $HOME/dotfiles
+  Get one back with:
+    curl -fsSL albertorota.dev/setmeup.sh | bash
+  or point this at an existing one:
+    DOTFILES_DIR=/path/to/dotfiles $SELF <command>"
+}
+
+usage() {
+  cat <<EOF
+Usage: $SELF <command> [options]
+
+  install [opts]      Re-run install.sh: re-render every template and re-link.
+                      Reuses the saved answers, so it does not prompt.
+  reconfigure [opts]  install.sh --reconfigure: change the colours, machine name,
+                      status-line components and tool selection.
+  update [opts]       Fast-forward the checkout, then install (no prompting).
+  tools [opts]        install.sh --tools-only: install the software, touch no config.
+  plan                What a tools run would do on this machine, without doing it.
+
+  backups             List the .bak files install.sh saved when it took a path over.
+  uninstall [-y]      reset.sh: remove every path install.sh created and restore
+                      each backup. Leaves the checkout, and the software, in place.
+  purge [-y] [--force]
+                      uninstall, and THEN delete the checkout and the saved answers.
+                      Backups are restored first, before the directory goes away.
+                      Refuses if the repo has uncommitted or unpushed work
+                      (--force overrides); -y skips the typed confirmation.
+
+  path                Print the checkout directory ('cd "\$($SELF path)"').
+  help                Show this message.
+
+Any options after the command are passed through, so '$SELF install --no-tools'
+and '$SELF reconfigure --no-tui' work the way they do on install.sh itself.
+
+The checkout is found from \$DOTFILES_DIR, then $POINTER
+(written by install.sh), then $HOME/dotfiles.
+EOF
+}
+
+# --- commands -----------------------------------------------------------------
+
+cmd_install()     { need_checkout; exec bash "$DOTFILES/install.sh" "$@"; }
+cmd_reconfigure() { need_checkout; exec bash "$DOTFILES/install.sh" --reconfigure "$@"; }
+cmd_tools()       { need_checkout; exec bash "$DOTFILES/install.sh" --tools-only "$@"; }
+cmd_plan()        { need_checkout; exec bash "$DOTFILES/lib/tools.sh" --plan; }
+cmd_path()        { need_checkout; printf '%s\n' "$DOTFILES"; }
+
+# Refresh the checkout, then install from it with no prompting -- the two halves
+# of "get this machine onto the current dotfiles".
+#
+# Only the git case is handled here on purpose. A checkout that came from the
+# tarball route (a machine with no git) is refreshed by install.sh's own
+# bootstrap, which owns fetch_tarball() and the stamp that says re-extracting is
+# safe; reimplementing that here is exactly the kind of second copy this file
+# exists to avoid. So say which one line to run and carry on installing from
+# what is already there.
+cmd_update() {
+  need_checkout
+  if [ -d "$DOTFILES/.git" ] && command -v git >/dev/null 2>&1; then
+    echo "Fast-forwarding $DOTFILES ..."
+    git -C "$DOTFILES" pull --ff-only || {
+      echo ""
+      echo "NOTE: couldn't fast-forward (local edits, a diverged branch, or no"
+      echo "      network). Installing from the checkout as it stands."
+    }
+  else
+    echo "NOTE: $DOTFILES is not a git checkout, so there is nothing to pull."
+    echo "      To refresh a tarball checkout in place:"
+    echo "        curl -fsSL albertorota.dev/setmeup.sh | bash"
+    echo "      Installing from the checkout as it stands."
+  fi
+  echo ""
+  exec bash "$DOTFILES/install.sh" -y "$@"
+}
+
+# Every backup still on disk, read off the manifest -- the same file reset.sh
+# works from, so this shows precisely what an uninstall would put back and what
+# it would leave for you to sort out.
+cmd_backups() {
+  [ -r "$MANIFEST" ] || die "no manifest at $MANIFEST -- install.sh has not run on this machine."
+  local dst found=0 extra=0 n
+  while IFS= read -r dst || [ -n "$dst" ]; do
+    [ -n "$dst" ] || continue
+    if [ -e "$dst.bak" ] || [ -L "$dst.bak" ]; then
+      printf '  %s.bak\n      -> restored to %s by "%s uninstall"\n' "$dst" "$dst" "$SELF"
+      found=$((found + 1))
+    fi
+    # .bak.2 and up: a real file turned up at a path install.sh had already taken
+    # over, so it was saved without displacing this machine's original .bak.
+    # reset.sh deliberately does not choose between them.
+    n=2
+    while [ -e "$dst.bak.$n" ] || [ -L "$dst.bak.$n" ]; do
+      printf '  %s.bak.%s\n      -> left alone (a later file at an already-managed path)\n' "$dst" "$n"
+      extra=$((extra + 1))
+      n=$((n + 1))
+    done
+  done < "$MANIFEST"
+  echo ""
+  if [ "$found" -eq 0 ] && [ "$extra" -eq 0 ]; then
+    echo "No backups: nothing was already at any of the paths install.sh took over."
+  else
+    echo "$found original backup(s) to restore, $extra numbered backup(s) left alone."
+  fi
+}
+
+# reset.sh does the work; what is added here is telling you, before it runs,
+# that this command deletes itself.
+cmd_uninstall() {
+  need_checkout
+  echo "Undoing the install from $DOTFILES:"
+  echo "  reset.sh removes every path install.sh created and restores each .bak."
+  echo "  This CLI is one of those paths ($HOME/.local/bin/$SELF), so it goes too."
+  echo "  The checkout stays -- 'bash $DOTFILES/install.sh' brings it all back,"
+  echo "  and '$SELF purge' is what also deletes the checkout."
+  echo ""
+  exec bash "$DOTFILES/reset.sh" "$@"
+}
+
+# Does the repo hold anything that exists nowhere but this machine? Committing
+# is the whole point of this checkout, so deleting one with unpushed work in it
+# is the one genuinely unrecoverable thing this CLI can do.
+#
+# Answers "yes" for a branch with no upstream: its commits have no other home by
+# definition. Answers "no" for a checkout with no .git at all -- the tarball
+# route -- which is honest rather than reassuring: there is no way to tell an
+# edited file there from a pristine one, and purge says so.
+repo_has_unsaved_work() {
+  [ -d "$DOTFILES/.git" ] || return 1
+  command -v git >/dev/null 2>&1 || return 1
+  [ -n "$(git -C "$DOTFILES" status --porcelain 2>/dev/null || true)" ] && return 0
+  local upstream
+  upstream="$(git -C "$DOTFILES" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)"
+  [ -n "$upstream" ] || return 0
+  [ -n "$(git -C "$DOTFILES" log --oneline "$upstream..HEAD" 2>/dev/null || true)" ] && return 0
+  return 1
+}
+
+# The destructive one. Order matters more than anything else here: reset.sh
+# lives IN the checkout and is what restores this machine's original files, so
+# it has to run and finish while the directory is still there.
+cmd_purge() {
+  local assume_yes=0 force=0 reply
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -y|--yes) assume_yes=1 ;;
+      -f|--force) force=1 ;;
+      -h|--help) usage; exit 0 ;;
+      *) die "purge: unknown option: $1" ;;
+    esac
+    shift
+  done
+
+  need_checkout
+  # Nothing about find_checkout() can return either of these, but this is the
+  # one command where a wrong answer is an `rm -rf` of it.
+  case "$DOTFILES" in
+    /|"$HOME") die "refusing to delete $DOTFILES" ;;
+  esac
+
+  if repo_has_unsaved_work; then
+    echo "$DOTFILES has uncommitted or unpushed work:"
+    echo ""
+    git -C "$DOTFILES" status --short --branch 2>/dev/null || true
+    echo ""
+    if [ "$force" -eq 0 ]; then
+      die "purge: refusing to delete it. Push or stash it first, or re-run with --force."
+    fi
+    echo "--force given; deleting it anyway."
+    echo ""
+  fi
+
+  echo "This will, in this order:"
+  echo "  1. run reset.sh -y: remove every path install.sh created in \$HOME and"
+  echo "     restore each original file from the .bak beside it"
+  echo "  2. delete the checkout            $DOTFILES"
+  echo "  3. delete the dotfiles state dir  $STATE_DIR"
+  echo "     (the saved colour/machine/tool answers, and the now-inert uv and"
+  echo "      tools PATH fragments)"
+  echo ""
+  echo "It does NOT uninstall the software the tools phase put on this machine"
+  echo "(oh-my-posh, herdr, tmux, cargo, Neovim, ...). Numbered backups"
+  echo "(.bak.2 and up) are left where they are; '$SELF backups' lists them."
+  [ -d "$DOTFILES/.git" ] || echo "Note: no .git here, so local edits could not be checked for."
+  echo ""
+
+  if [ "$assume_yes" -eq 0 ]; then
+    if [ ! -t 0 ]; then
+      die "purge: no terminal to confirm on; pass -y if you really mean it."
+    fi
+    printf 'Type "purge" to go ahead: '
+    read -r reply || reply=""
+    [ "$reply" = purge ] || { echo "Aborted; nothing was changed."; exit 1; }
+    echo ""
+  fi
+
+  # Out of the checkout before anything deletes it: if this was launched from
+  # inside it, rm would be pulling the rug out from under our own cwd.
+  cd "$HOME"
+
+  echo "--- restoring backups (reset.sh) ---"
+  # Not fatal on its own: a half-completed reset still leaves less behind than
+  # stopping here would, and the paths it did not manage to remove are named in
+  # its own output. But do not go on to delete the checkout, because reset.sh is
+  # in it and re-running it is then impossible.
+  # DOTFILES_PURGING silences reset.sh's closing "re-run install.sh from the
+  # checkout" note -- true when reset.sh is run on its own, a lie two lines
+  # before that checkout is deleted.
+  DOTFILES_PURGING=1 bash "$DOTFILES/reset.sh" -y || die "purge: reset.sh failed; the checkout was NOT deleted.
+  Look at what it printed, fix it, then re-run '$SELF purge'."
+
+  echo ""
+  echo "--- deleting the checkout ---"
+  rm -rf "$DOTFILES"
+  echo "Removed $DOTFILES"
+  rm -rf "$STATE_DIR"
+  echo "Removed $STATE_DIR"
+
+  echo ""
+  echo "Done. This shell still has the old aliases, PATH and prompt loaded --"
+  echo "they go with the next new shell (or 'exec \$SHELL -l' now)."
+  echo "To set all of this up again:"
+  echo "    curl -fsSL albertorota.dev/setmeup.sh | bash"
+}
+
+# --- dispatch -----------------------------------------------------------------
+
+[ $# -gt 0 ] || { usage; exit 0; }
+cmd="$1"; shift
+case "$cmd" in
+  install)             cmd_install "$@" ;;
+  reconfigure|config)  cmd_reconfigure "$@" ;;
+  update)              cmd_update "$@" ;;
+  tools)               cmd_tools "$@" ;;
+  plan)                cmd_plan "$@" ;;
+  backups)             cmd_backups "$@" ;;
+  uninstall|reset)     cmd_uninstall "$@" ;;
+  purge)               cmd_purge "$@" ;;
+  path|where)          cmd_path "$@" ;;
+  help|-h|--help)      usage ;;
+  *) echo "$SELF: unknown command: $cmd" >&2; echo "" >&2; usage >&2; exit 2 ;;
+esac
