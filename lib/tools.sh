@@ -613,6 +613,28 @@ cargo_usable() {
   [ "$AVAIL_CARGO" = 1 ] && [ "$AVAIL_CC" = 1 ]
 }
 
+# eza/fd/bat/delta's own tarball route (see _route_system_or_cargo() and
+# _install_tarball_or_cargo() below) resolves them with no cargo and no conda
+# at all on any arch it can name -- so cc_needed() and conda_needed() must NOT
+# count one of these four as "needs a compiler" or "needs conda-forge" just
+# because it is selected and absent; that would only have been true before the
+# tarball route existed. Named for the tool id, not the crate, since that is
+# what both loops iterate over.
+#
+# Mac is a hard "no" regardless of arch: _route_system_or_cargo()'s mac branch
+# never offers tarball at all (Homebrew is the fast route there, and eza ships
+# no darwin build for either triple function to be right about), so this must
+# agree or cc_needed()/conda_needed() would stop counting a tool that its own
+# real route can never satisfy that way.
+_release_tarball_viable() {
+  is_mac && return 1
+  case "$1" in
+    eza|delta) rust_triple_gnu >/dev/null 2>&1 ;;
+    fd|bat)    rust_triple     >/dev/null 2>&1 ;;
+    *)         return 1 ;;
+  esac
+}
+
 # Whether a compiler is worth installing here: only when something selected has
 # no route EXCEPT a cargo build. Deliberately shaped like brew_needed() and
 # deliberately NOT asking tool_route() -- the cargo routes consult AVAIL_CC, so
@@ -638,7 +660,9 @@ cc_needed() {
   # ...nor when conda-forge will, which is a prebuilt binary against a compile.
   conda_coming && return 1
   for id in eza fd bat delta; do
-    if tool_selected "$id" && ! tool_present "$id"; then return 0; fi
+    if tool_selected "$id" && ! tool_present "$id" && ! _release_tarball_viable "$id"; then
+      return 0
+    fi
   done
   return 1
 }
@@ -671,13 +695,17 @@ conda_needed() {
   # this it was apt, Homebrew, or nothing at all -- and "nothing at all" on the
   # login nodes whose tmux config is the main thing this repo syncs.
   if tool_selected tmux && ! tool_present tmux; then return 0; fi
-  # And the four rust tools, but only when nothing will be able to build them.
-  # cargo_coming plus a live AVAIL_CC is the whole test: apt is already ruled
-  # out above, and apt is the only thing that could have added a compiler, so
-  # AVAIL_CC cannot change under us after this point.
+  # And the four rust tools, but only when nothing will be able to build OR
+  # download them: cargo_coming plus a live AVAIL_CC is one way out, and their
+  # own release tarball (_release_tarball_viable(), now checked first) is the
+  # other and usually the one that applies -- apt is already ruled out above,
+  # and apt is the only thing that could have added a compiler, so AVAIL_CC
+  # cannot change under us after this point.
   if ! { cargo_coming && [ "$AVAIL_CC" = 1 ]; }; then
     for id in eza fd bat delta; do
-      if tool_selected "$id" && ! tool_present "$id"; then return 0; fi
+      if tool_selected "$id" && ! tool_present "$id" && ! _release_tarball_viable "$id"; then
+        return 0
+      fi
     done
   fi
   return 1
@@ -854,10 +882,14 @@ tool_route() {
     fzf)      if [ "$AVAIL_GIT" = 1 ]; then echo "git|~/.fzf (--no-update-rc)"
               elif [ "$AVAIL_APT" = 1 ]; then echo "apt|fzf"
               else echo "|needs git or apt"; fi ;;
-    eza)      _route_system_or_cargo eza eza eza ;;
-    fd)       _route_system_or_cargo fd-find fd-find fd-find ;;
-    bat)      _route_system_or_cargo bat bat bat ;;
-    delta)    _route_system_or_cargo git-delta git-delta git-delta ;;
+    # eza and git-delta go through rust_triple_gnu, not rust_triple: neither
+    # publishes an aarch64 musl build (only x86_64's), and a plain gnu triple
+    # covers every arch both of them DO release for. fd and bat ship musl on
+    # both, so they keep the static binary rust_triple() prefers.
+    eza)      _route_system_or_cargo eza eza eza rust_triple_gnu eza-community/eza ;;
+    fd)       _route_system_or_cargo fd-find fd-find fd-find rust_triple sharkdp/fd ;;
+    bat)      _route_system_or_cargo bat bat bat rust_triple sharkdp/bat ;;
+    delta)    _route_system_or_cargo git-delta git-delta git-delta rust_triple_gnu dandavison/delta ;;
     # Not in apt (nor Debian) -- there is a golang-github-jesseduffield-lazycore
     # package but no lazygit itself -- and it is Go, not Rust, so there is no
     # cargo fallback the way dua-cli has one. Upstream ships a release tarball
@@ -942,8 +974,18 @@ tool_route() {
 # 1GB detour. Its package names are a third spelling again -- apt's fd-find,
 # cargo's fd-find, Homebrew's fd and conda-forge's fd-find -- so it is passed in
 # rather than derived from any of the others.
+#
+# On Linux, a release tarball (see _install_tarball_or_cargo() below) is tried
+# BEFORE cargo, not after: it is a download, cargo is minutes in the compiler,
+# and there is no reason to prefer the slower one just because both are
+# available. Like dua's own route, this only tests whether the arch has a name
+# (triple_fn) -- it cannot know here whether the asset lookup itself will
+# succeed, so a plan can say "tarball" and the install still fall back to
+# cargo. macOS is untouched: Homebrew is the fast route there and eza ships no
+# darwin build at all, so there is nothing for a tarball check to buy it.
 _route_system_or_cargo() {
-  local apt_pkg="$1" crate="$2" conda_pkg="$3" formula="${1%-find}" lack="cargo"
+  local apt_pkg="$1" crate="$2" conda_pkg="$3" triple_fn="$4" repo="$5"
+  local formula="${1%-find}" lack="cargo"
   [ "$AVAIL_CARGO" = 1 ] && [ "$AVAIL_CC" = 0 ] && lack="a C compiler"
   if is_mac; then
     if [ "$AVAIL_BREW" = 1 ]; then echo "brew|$formula"
@@ -954,6 +996,7 @@ _route_system_or_cargo() {
     return
   fi
   if [ "$AVAIL_APT" = 1 ]; then echo "apt|$apt_pkg"
+  elif "$triple_fn" >/dev/null 2>&1; then echo "tarball|$repo -> ~/.local/bin"
   elif cargo_usable; then echo "cargo|$crate"
   elif conda_coming; then echo "conda|$conda_pkg (conda-forge)"
   elif brew_coming; then echo "brew|$formula"
@@ -1103,6 +1146,38 @@ rust_triple() {
     */armv7l|*/armv7)    printf 'arm-unknown-linux-gnueabihf' ;;
     *) return 1 ;;
   esac
+}
+
+# Same platform switch as rust_triple(), gnu instead of musl. eza and git-delta
+# publish no aarch64 musl build -- only x86_64's -- so the two of them resolve
+# through this one instead of rust_triple(), on every arch, rather than trying
+# musl first and falling back per-arch for just those two.
+rust_triple_gnu() {
+  case "$OS_KERNEL/$(uname -m)" in
+    Darwin/arm64)        printf 'aarch64-apple-darwin' ;;
+    Darwin/x86_64)       printf 'x86_64-apple-darwin' ;;
+    */x86_64|*/amd64)    printf 'x86_64-unknown-linux-gnu' ;;
+    */aarch64|*/arm64)   printf 'aarch64-unknown-linux-gnu' ;;
+    */riscv64)           printf 'riscv64gc-unknown-linux-gnu' ;;
+    */armv7l|*/armv7)    printf 'arm-unknown-linux-gnueabihf' ;;
+    *) return 1 ;;
+  esac
+}
+
+# eza/fd/bat/delta each publish a static release tarball per platform, the same
+# shape dua-cli's is -- so a machine with no apt should download one of those
+# rather than spend minutes in the compiler. cargo is the fallback for an arch
+# neither triple function names, or if the asset lookup itself fails (rate
+# limit -- see install_dua()'s comment above for the same trade).
+_install_tarball_or_cargo() {
+  local repo="$1" prefix="$2" triple_fn="$3" bin="$4" crate="$5" triple url
+  triple="$("$triple_fn" 2>/dev/null)" || triple=""
+  if [ -n "$triple" ]; then
+    url="$(github_latest_asset "$repo" "${prefix}.*${triple}\.tar\.gz$")"
+    [ -n "$url" ] && fetch_bin_from_tarball "$url" "$bin" && return 0
+  fi
+  cargo_usable || return 1
+  cargo_install "$crate" && note_path "$HOME/.cargo/bin"
 }
 
 # --- the installers -------------------------------------------------------
@@ -1315,28 +1390,33 @@ install_fzf() {
   apt_install fzf
 }
 
-# eza / fd / bat / delta all share the apt-or-cargo-or-brew shape.
-# eza / fd / bat / delta all share the apt-or-cargo-or-conda-or-brew shape. The
-# binary a package installs is not always its own name (git-delta ships `delta`,
-# fd-find ships `fd`), so the conda branch is told both.
+# eza / fd / bat / delta all share the apt-or-tarball-or-cargo-or-conda-or-brew
+# shape. The binary a package installs is not always its own name (git-delta
+# ships `delta`, fd-find ships `fd`), so the conda branch is told both; the
+# tarball branch additionally needs the repo, the asset's name prefix and
+# which triple function to look up (see rust_triple_gnu() and
+# _install_tarball_or_cargo() above), plus the crate name as its cargo
+# fallback -- the same one the cargo branch below uses directly.
 _install_via_route() {
-  local id="$1" bin="$2" route method detail pkg
+  local id="$1" bin="$2" repo="$3" prefix="$4" triple_fn="$5" crate="$6"
+  local route method detail pkg
   route="$(tool_route "$id")"; method="${route%%|*}"; detail="${route#*|}"
   case "$method" in
-    apt)   apt_install "$detail" ;;
-    cargo) cargo_install "$detail" && note_path "$HOME/.cargo/bin" ;;
-    brew)  brew_install "$detail" ;;
+    apt)     apt_install "$detail" ;;
+    tarball) _install_tarball_or_cargo "$repo" "$prefix" "$triple_fn" "$bin" "$crate" ;;
+    cargo)   cargo_install "$detail" && note_path "$HOME/.cargo/bin" ;;
+    brew)    brew_install "$detail" ;;
     # The detail carries a " (conda-forge)" tail for the plan's benefit; the
     # package name is the first word of it.
-    conda) pkg="${detail%% *}"; _install_conda_pkg "$pkg" "$bin" ;;
-    *)     return 1 ;;
+    conda)   pkg="${detail%% *}"; _install_conda_pkg "$pkg" "$bin" ;;
+    *)       return 1 ;;
   esac
 }
 
-install_eza()   { _install_via_route eza eza; }
-install_fd()    { _install_via_route fd fd; }
-install_bat()   { _install_via_route bat bat; }
-install_delta() { _install_via_route delta delta; }
+install_eza()   { _install_via_route eza   eza   eza-community/eza eza_   rust_triple_gnu eza ; }
+install_fd()    { _install_via_route fd    fd    sharkdp/fd        fd-    rust_triple     fd-find ; }
+install_bat()   { _install_via_route bat   bat   sharkdp/bat       bat-   rust_triple     bat ; }
+install_delta() { _install_via_route delta delta dandavison/delta  delta- rust_triple_gnu git-delta ; }
 
 # Asset names embed the version (lazygit_0.64.0_linux_x86_64.tar.gz), so -- like
 # dua -- the /releases/latest/download/<name> permanent redirect jq and
