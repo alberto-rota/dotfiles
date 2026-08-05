@@ -222,6 +222,7 @@ TOOL_META=(
   "fd|fd (find)|shell"
   "bat|bat (cat)|shell"
   "delta|delta (git pager)|shell"
+  "lazygit|lazygit (git TUI)|shell"
   "glow|glow (markdown)|shell"
   "dua|dua-cli (disk usage)|shell"
   "neovim|Neovim|editor"
@@ -460,6 +461,7 @@ tool_present() {
     fd)            have fd || have fdfind ;;
     bat)           have bat || have batcat ;;
     delta)         have delta ;;
+    lazygit)       have lazygit ;;
     glow)          have glow ;;
     # The package is dua-cli, the binary is dua -- same split as git-delta/delta
     # and fd-find/fd, and the id follows the binary like those two do.
@@ -856,6 +858,22 @@ tool_route() {
     fd)       _route_system_or_cargo fd-find fd-find fd-find ;;
     bat)      _route_system_or_cargo bat bat bat ;;
     delta)    _route_system_or_cargo git-delta git-delta git-delta ;;
+    # Not in apt (nor Debian) -- there is a golang-github-jesseduffield-lazycore
+    # package but no lazygit itself -- and it is Go, not Rust, so there is no
+    # cargo fallback the way dua-cli has one. Upstream ships a release tarball
+    # for every arch this repo targets, which needs no privilege and is
+    # therefore the first choice; Homebrew and conda-forge both carry it too
+    # (conda-forge on all four subdirs, kept current), so an architecture the
+    # tarball has no asset for still has two working fallbacks.
+    lazygit)  case "$(uname -m)" in
+                x86_64|amd64|aarch64|arm64)
+                  echo "tarball|jesseduffield/lazygit -> ~/.local/bin" ;;
+                *)
+                  if [ "$AVAIL_BREW" = 1 ]; then echo "brew|lazygit"
+                  elif conda_coming; then echo "conda|lazygit (conda-forge)"
+                  elif brew_coming; then echo "brew|lazygit"
+                  else echo "|no release for $(uname -m), and no Homebrew or conda-forge"; fi ;;
+              esac ;;
     glow)     echo "tarball|charmbracelet/glow -> ~/.local/bin" ;;
     # dua-cli is in NO system package manager here -- not apt on 24.04, not
     # Debian -- so the usual apt-first shape does not apply. What it does ship is
@@ -1319,6 +1337,27 @@ install_eza()   { _install_via_route eza eza; }
 install_fd()    { _install_via_route fd fd; }
 install_bat()   { _install_via_route bat bat; }
 install_delta() { _install_via_route delta delta; }
+
+# Asset names embed the version (lazygit_0.64.0_linux_x86_64.tar.gz), so -- like
+# dua -- the /releases/latest/download/<name> permanent redirect jq and
+# oh-my-posh use cannot work here and this costs one GitHub API call. The
+# package name is the same as the binary in both Homebrew and conda-forge, so
+# unlike _install_via_route() no separate bin argument is needed there.
+install_lazygit() {
+  local route; route="$(tool_route lazygit)"
+  case "${route%%|*}" in
+    brew)    brew_install lazygit ;;
+    conda)   _install_conda_pkg lazygit lazygit ;;
+    tarball)
+      local os="linux" url
+      is_mac && os="darwin"
+      url="$(github_latest_asset jesseduffield/lazygit "lazygit_[0-9.]+_${os}_$(arch_tag)\.tar\.gz")"
+      [ -n "$url" ] || return 1
+      fetch_bin_from_tarball "$url" lazygit
+      ;;
+    *) return 1 ;;
+  esac
+}
 
 install_glow() {
   local url os="[Ll]inux"
