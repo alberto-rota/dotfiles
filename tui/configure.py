@@ -195,7 +195,9 @@ class Answers:
     omp_text: str = "primary"
     omp_chevron_ok: str = "primary"
     omp_chevron_error: str = "secondary"
-    # Start hsl (herdr + the status line) from ~/.bashrc at login. Off by
+    # Start hsl -- or plain herdr where hsl does not exist, which is every
+    # Mac: hsl ships with the Linux-only herdr-statusline plugin -- from
+    # ~/.bashrc at login. Off by
     # default: it is the one answer that changes what opening a terminal does,
     # and shell/hsl-login.sh.in carries a wall of guards because of it.
     hsl_login: bool = False
@@ -1365,10 +1367,10 @@ class SetupApp(App):
                 yield Checkbox("date / time pill", self.answers.show_datetime, id="show_datetime")
 
                 yield Static("Shell login", classes="section")
-                yield Checkbox("start hsl at login", self.answers.hsl_login,
+                yield Checkbox("start herdr at login", self.answers.hsl_login,
                                id="hsl_login")
-                yield Static(Text("herdr + the status line, every interactive\n"
-                                  "login. NO_HSL=1 skips it.", style="italic"),
+                yield Static(Text("herdr, plus the status line where hsl is\n"
+                                  "installed. NO_HSL=1 skips it.", style="italic"),
                              classes="hint")
 
                 yield Static("oh-my-posh accents", classes="section")

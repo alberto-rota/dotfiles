@@ -8,7 +8,9 @@
 #>>
 #>> SOURCED, never executed: every exit path below must be `return`. An `exit`
 #>> here would close the login shell it is running in.
-# Launch hsl (herdr plus the status line) at login, if that was asked for.
+# Launch hsl (herdr plus the status line) at login, if that was asked for --
+# or plain herdr where hsl does not exist, which is every Mac. See the bottom of
+# this file for that.
 #
 # This is the only thing in these dotfiles that can lock you out of your own
 # machine, so it is deliberately paranoid. Every condition has to hold; it runs
@@ -52,9 +54,30 @@ case $- in *i*) ;; *) return 0 ;; esac
 [ -t 0 ] && [ -t 1 ] || return 0
 case "${TERM:-dumb}" in dumb|unknown|"") return 0 ;; esac
 
-# And it has to be installed: hsl ships with the herdr-statusline plugin, which
-# is a separate answer in the wizard, so this can legitimately be absent.
-command -v hsl >/dev/null 2>&1 || return 0
+# And there has to be something to run. hsl is herdr plus the status line, and
+# it ships with the herdr-statusline plugin -- a separate answer in the wizard,
+# and one that has NO macOS build at all (the plugin's manifest is
+# platforms = ["linux"], so tool_route reports `na|linux only` there). On a Mac
+# this used to mean the autostart answer did nothing whatsoever, silently.
+#
+# So fall back to plain herdr. The answer is "start my workspace manager when I
+# open a terminal"; the status line is a detail of how that workspace looks, not
+# the thing being asked for. herdr with no arguments launches or attaches to the
+# persistent session, which is exactly what hsl wraps.
+#
+# Both names are unset again afterwards: this file is SOURCED into the user's
+# interactive shell, so anything left behind is a variable in their environment
+# for the rest of the session.
+_hsl_cmd=""
+for _hsl_try in hsl herdr; do
+  if command -v "$_hsl_try" >/dev/null 2>&1; then _hsl_cmd="$_hsl_try"; break; fi
+done
+unset _hsl_try
+if [ -z "$_hsl_cmd" ]; then
+  unset _hsl_cmd
+  return 0
+fi
 
 export DOTFILES_HSL_STARTED=1
-hsl
+"$_hsl_cmd"
+unset _hsl_cmd

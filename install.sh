@@ -779,7 +779,7 @@ ask_components() {
   ask_bool SHOW_DATETIME "  date / time pill"
 
   section "Shell login"
-  ask_bool HSL_LOGIN "  start hsl at login"
+  ask_bool HSL_LOGIN "  start herdr at login"
 
   section "oh-my-posh accents" "machine segment + status chevrons"
   ask_choice OMP_ICON_MODE "  leading glyph" fixed slurm
@@ -1083,9 +1083,15 @@ case "$LOGIN_SHELL" in
      echo "            To switch for good:  chsh -s \$(command -v $SHELL_FOR_RC)" ;;
 esac
 if [ "$HSL_LOGIN" = 1 ]; then
-  echo "  login     hsl (herdr + status line) starts at every interactive login"
+  # hsl where it exists, plain herdr where it does not (every Mac -- the
+  # herdr-statusline plugin that ships hsl is Linux-only).
+  if is_mac; then
+    echo "  login     herdr starts at every interactive login (hsl is Linux-only)"
+  else
+    echo "  login     hsl (herdr + status line) starts at every interactive login"
+  fi
 else
-  echo "  login     plain shell (hsl autostart off)"
+  echo "  login     plain shell (herdr autostart off)"
 fi
 if [ "$INSTALL_TOOLS" = 1 ]; then
   TOOLS_ON=0
@@ -1624,10 +1630,22 @@ if [ "$HSL_LOGIN" = 1 ]; then
     echo "  - hsl (herdr + the status line) will start at every interactive login."
     echo "    'NO_HSL=1 $HSL_ESCAPE_SHELL -l' gets you a plain shell; quitting herdr drops you"
     echo "    into one too (it is run, not exec'd, so a login can't be lost to it)."
+  elif command -v herdr >/dev/null 2>&1; then
+    # hsl ships with herdr-statusline, whose manifest is platforms = ["linux"],
+    # so on a Mac it is never there. The autostart falls back to plain herdr
+    # rather than doing nothing -- see shell/hsl-login.sh.in.
+    echo "  - herdr will start at every interactive login. ('hsl' -- herdr plus the"
+    if is_mac; then
+      echo "    status line -- is Linux-only, so this machine gets herdr on its own.)"
+    else
+      echo "    status line -- is not on PATH here, so it is plain herdr for now.)"
+    fi
+    echo "    'NO_HSL=1 $HSL_ESCAPE_SHELL -l' gets you a plain shell; quitting herdr drops you"
+    echo "    into one too (it is run, not exec'd, so a login can't be lost to it)."
   else
-    echo "  - NOTE: the hsl autostart is on, but 'hsl' is not on PATH. It ships with"
-    echo "    the herdr-statusline plugin; until that is installed the autostart just"
-    echo "    no-ops, so your logins are unaffected either way."
+    echo "  - NOTE: the login autostart is on, but neither 'hsl' nor 'herdr' is on"
+    echo "    PATH. Until one of them is installed the autostart just no-ops, so"
+    echo "    your logins are unaffected either way."
   fi
 fi
 print_next_steps

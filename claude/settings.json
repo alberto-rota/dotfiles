@@ -2,7 +2,7 @@
   "permissions": {
     "defaultMode": "auto"
   },
-  "model": "sonnet",
+  "model": "opus[1m]",
   "hooks": {
     "PostToolUse": [
       {
@@ -10,7 +10,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "atuin hook claude-code"
+            "command": "PATH=\"$HOME/.atuin/bin:$PATH\"; command -v atuin >/dev/null 2>&1 && atuin hook claude-code; true"
           }
         ]
       }
@@ -21,7 +21,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "atuin hook claude-code"
+            "command": "PATH=\"$HOME/.atuin/bin:$PATH\"; command -v atuin >/dev/null 2>&1 && atuin hook claude-code; true"
           }
         ]
       }
@@ -32,7 +32,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "atuin hook claude-code"
+            "command": "PATH=\"$HOME/.atuin/bin:$PATH\"; command -v atuin >/dev/null 2>&1 && atuin hook claude-code; true"
           }
         ]
       }
@@ -43,7 +43,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash '/home/albe/.claude/hooks/herdr-agent-state.sh' session",
+            "command": "h=\"$HOME/.claude/hooks/herdr-agent-state.sh\"; [ -f \"$h\" ] && bash \"$h\" session; true",
             "timeout": 10
           }
         ]

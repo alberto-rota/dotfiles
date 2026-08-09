@@ -47,6 +47,14 @@ width = "95%"
 height = "85%"
 description = "slurm queue + running jobs"
 
+[[keys.command]]
+key = "prefix+p"
+type = "popup"
+command = "/bin/zsh"
+width = "95%"
+height = "85%"
+description = "zsh"
+
 [ui.toast]
 delivery = "herdr"
 
