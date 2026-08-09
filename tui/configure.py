@@ -24,7 +24,7 @@ What makes the previews trustworthy rather than a drawing of what the config is
 *supposed* to look like:
 
   * the status bar is the string lib/derive.sh assembles -- the same function
-    install.sh calls to render the real herdr-statusline config -- interpreted
+    install.sh calls to render the real hsl status line -- interpreted
     here by a small tmux-format renderer, with the `#(...)` segments actually
     executed (a rendered copy of gpu-status.sh really does run nvidia-smi).
     Only herdr's bar is shown: tmux's is built from the same toggles by the same
@@ -80,7 +80,7 @@ P_SENTINEL = "<<PRIMARY>>"
 S_SENTINEL = "<<SECONDARY>>"
 
 HELPER_TEMPLATES = {
-    "gpu-status.sh": "herdr/plugins/herdr-statusline/gpu-status.sh.in",
+    "gpu-status.sh": "tmux/gpu-status.sh.in",
     "slurm-status.sh": "tmux/slurm-status.sh.in",
     "other-sessions.sh": "tmux/other-sessions.sh.in",
 }
@@ -195,9 +195,8 @@ class Answers:
     omp_text: str = "primary"
     omp_chevron_ok: str = "primary"
     omp_chevron_error: str = "secondary"
-    # Start hsl -- or plain herdr where hsl does not exist, which is every
-    # Mac: hsl ships with the Linux-only herdr-statusline plugin -- from
-    # ~/.bashrc at login. Off by
+    # Start hsl (bin/hsl: herdr plus the status line, on every platform now)
+    # from ~/.bashrc at login. Off by
     # default: it is the one answer that changes what opening a terminal does,
     # and shell/hsl-login.sh.in carries a wall of guards because of it.
     hsl_login: bool = False
@@ -639,7 +638,7 @@ class Previewer:
 
     # -- panes --------------------------------------------------------------
     def statusline(self, derived: dict[str, str], answers: Answers, width: int) -> Text:
-        """herdr-statusline, the only bar previewed: tmux's is assembled from the
+        """The hsl bar, the only one previewed: tmux's is assembled from the
         same toggles and stays in sync by construction (see lib/derive.sh), so
         showing both said the same thing twice."""
         env = answers.as_env()
@@ -1409,7 +1408,7 @@ class SetupApp(App):
                     posh_box.border_title = "oh-my-posh"
                     yield Static(id="posh")
                 with Container(classes="preview wide") as bar_box:
-                    bar_box.border_title = "herdr-statusline"
+                    bar_box.border_title = "hsl status line"
                     yield Static(id="hsl-bar")
                 with Container(classes="preview wide") as claude_box:
                     claude_box.border_title = "claude code status line"
@@ -1719,7 +1718,7 @@ def dump(answers: Answers, width: int) -> None:
         derived = derive(answers)
         for title, pane in (
             ("oh-my-posh", previewer.posh(derived, answers, width)),
-            ("herdr-statusline", previewer.statusline(derived, answers, width)),
+            ("hsl status line", previewer.statusline(derived, answers, width)),
             ("claude code status line", previewer.claude(derived, answers, width)),
             ("herdr", previewer.herdr(derived, width)),
             (f"install plan  ({privilege_summary()})",

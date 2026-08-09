@@ -233,7 +233,6 @@ TOOL_META=(
   "nvitop|nvitop (GPU monitor)|gpu"
   "tailscale|Tailscale (needs 'up')|net"
   "herdr|herdr|herdr"
-  "herdr_statusline|herdr-statusline plugin|herdr"
   "herdr_file_viewer|herdr-file-viewer plugin|herdr"
 )
 
@@ -263,20 +262,14 @@ tool_group() { _tool_meta "$1" group; }
 # bat/delta/glow are deliberately not listed under herdr_file_viewer because the
 # plugin installs and runs fine without them -- it just falls back to plain text.
 #
-# herdr_statusline needs rust as well as herdr, and that one is not guesswork:
-# its herdr-plugin.toml declares a build step (`sh scripts/build.sh`) which
-# compiles hsl-config with `cargo build --release --locked` and only then
-# installs the ~/.local/bin/hsl launcher. Without cargo the build exits 1, the
-# plugin is not installed at all, and -- since install_tools() swallows each
-# installer's output -- the whole explanation was one unattributed "FAILED".
+# The status line around a herdr session is NOT here any more, and that is the
+# point of it: it used to be the herdr-statusline plugin, which declares a build
+# step compiling hsl-config with `cargo build --release --locked`, so it needed
+# `herdr rust buildtools` and was Linux-only into the bargain. It is now bin/hsl
+# plus a rendered tmux config, which needs nothing but tmux -- see bin/hsl.
 tool_deps() {
   case "$1" in
     lazyvim) echo "neovim git" ;;
-    # buildtools as well as rust, and for the same reason: cargo is half a
-    # cargo build. tool_present buildtools is have_cc, so a machine that already
-    # links satisfies it without installing anything, and one that does not gets
-    # "SKIPPED (buildtools is not installed)" instead of a swallowed rustc error.
-    herdr_statusline) echo "herdr rust buildtools" ;;
     herdr_file_viewer) echo "herdr" ;;
   esac
 }
@@ -402,8 +395,9 @@ brew_activate() {
 #     A conda compiler links against conda's own libgcc and sysroot, so the
 #     cargo binaries it produced would depend on this environment continuing to
 #     exist -- a `cargo build` that works today and breaks when the env is
-#     pruned is worse than an honest "needs apt". herdr_statusline therefore
-#     still wants a real compiler, and still says so.
+#     pruned is worse than an honest "needs apt". Nothing in the catalogue is
+#     routed through a cargo build any more, so this costs nothing today; it is
+#     the rule to keep if one ever is again.
 #
 # The env lives in its own prefix and only the binaries actually asked for are
 # symlinked into ~/.local/bin. Putting $CONDA_ENV/bin on PATH would be less
@@ -478,7 +472,6 @@ tool_present() {
     groundcontrol) have groundcontrol || have gc ;;
     nvitop)        have nvitop ;;
     herdr)         have herdr ;;
-    herdr_statusline)  herdr_has_plugin herdr-statusline ;;
     herdr_file_viewer) herdr_has_plugin herdr-file-viewer ;;
     *) return 1 ;;
   esac
@@ -673,19 +666,22 @@ tarball_triple() {
 # no route EXCEPT a cargo build. Deliberately shaped like brew_needed() and
 # deliberately NOT asking tool_route() -- the cargo routes consult AVAIL_CC, so
 # asking them what they would do would be circular. Kept explicit instead.
+# It currently has NO clause, and so always answers no. That is not a stub: it
+# is the honest state of the catalogue. eza/fd/bat/delta were the first to go,
+# when cargo stopped being their last-resort route (see _route_prebuilt());
+# herdr-statusline was the last one left, and it is gone too -- the status line
+# around a herdr session is bin/hsl now, a shell script over tmux, with nothing
+# to compile. So there is nothing a compiler could buy this machine, and
+# `buildtools` resolves to `na` everywhere rather than sending an apt machine
+# after build-essential it will never use.
+#
+# The shape is kept, rather than the function deleted, because it is the hook a
+# future cargo-only tool has to hang itself on: add the clause here, and the
+# ordering of `buildtools` ahead of `rust` in TOOL_META does the rest.
 cc_needed() {
   tool_selected buildtools || return 1
   [ "$AVAIL_CC" = 1 ] && return 1
   cargo_coming || return 1          # nothing will be building with cargo at all
-  # herdr-statusline compiles hsl-config; there is no prebuilt route to it, and
-  # deliberately no conda one either (see the conda-forge section above), so this
-  # is the one clause a conda environment cannot answer.
-  if ! is_mac && tool_selected herdr_statusline && ! tool_present herdr_statusline; then
-    return 0
-  fi
-  # ...and it is now the ONLY clause. eza/fd/bat/delta used to be counted here
-  # too, because cargo was their last-resort route; it no longer is (see
-  # _route_prebuilt()), so nothing they need can be bought with a compiler.
   return 1
 }
 
@@ -813,8 +809,9 @@ brew_coming() {
 # --- route resolution -----------------------------------------------------
 # One decision point, used by both --plan and install_tools(). Prints
 # "method|detail". An empty method means there is no route on this machine; the
-# method "na" means there is nothing to do here and never was (herdr-statusline
-# on a Mac, Homebrew on a machine that needs nothing from it), which both report
+# method "na" means there is nothing to do here and never was (Homebrew on a
+# machine that needs nothing from it, buildtools where nothing needs a compiler),
+# which both report
 # as a skip rather than as a machine that fell short.
 tool_route() {
   case "$1" in
@@ -958,22 +955,15 @@ tool_route() {
     gdown|groundcontrol|nvitop)
               if [ "$AVAIL_UV" = 1 ]; then echo "uv|uv tool install $(_pypi_name "$1")"
               else echo "|needs uv"; fi ;;
-    # The plugin's own herdr-plugin.toml is `platforms = ["linux"]`, so on macOS
-    # there is nothing to install rather than something that failed -- and it
-    # wraps tmux around a herdr session to draw a status line, which is a Linux
-    # box's idea of a login shell anyway. na, not an empty method.
-    #
-    # Unlike every other cargo consumer this one has no second route: the plugin
-    # BUILDS hsl-config, there is no release binary, so both halves of
-    # cargo_usable are hard requirements and a machine short of either is
-    # blocked rather than attempted. Saying which half is missing is the point --
-    # the failure this replaces was 30 lines of rustc output ending in
-    # `linker "cc" not found`, printed nowhere because install_tools() sends each
-    # installer's output to /dev/null.
-    herdr_statusline)  if is_mac; then echo "na|linux only (plugin manifest)"
-                       elif ! cargo_coming; then echo "|needs rust (builds hsl-config)"
-                       elif [ "$AVAIL_CC" = 0 ]; then echo "|needs a C compiler (cargo build)"
-                       else echo "plugin|iiii1224/herdr-statusline"; fi ;;
+    # There is no herdr_statusline row here any more. It used to be the one
+    # entry with no route at all on macOS (`na|linux only`, from the plugin's
+    # own `platforms = ["linux"]`) and the one entry that could be blocked on a
+    # Linux box for want of a compiler -- it BUILDS hsl-config and there is no
+    # release binary of it. The status line is bin/hsl now: a shell script over
+    # a tmux config this repo renders, installed by the config phase like every
+    # other script in bin/, so there is nothing left for the tools phase to do
+    # and nothing left to be blocked on. tmux is the only thing it needs, and
+    # tmux is a catalogue entry of its own.
     herdr_file_viewer) echo "plugin|smarzban/herdr-file-viewer" ;;
     *) echo "|unknown tool" ;;
   esac
@@ -996,9 +986,12 @@ tool_route() {
 # to cost ten minutes. So the honest answer on a machine with no prebuilt route
 # is `blocked`, which the plan and the run both report, and the install moves on.
 #
-# rust/cargo stays in the catalogue and stays useful: herdr-statusline genuinely
-# has no prebuilt route (it compiles hsl-config), and that is now the only thing
-# in here that ever invokes a compiler.
+# rust/cargo stays in the catalogue because it is a toolchain worth having on a
+# development machine, but nothing in here is routed through it any more --
+# herdr-statusline was the last, and the status line is bin/hsl now. The only
+# code left that would reach for cargo is install_dua()'s fallback when the
+# GitHub API rate-limits its tarball lookup, and herdr-file-viewer's build when
+# there is no prebuilt asset for the platform. Neither is a planned route.
 #
 # Order, fastest first:
 #   apt          -- Linux with privilege; seconds, and the machine's own package
@@ -1570,7 +1563,8 @@ _install_herdr_plugin() {
   have herdr || return 1
   # herdr runs each plugin's build commands as a child of this process, so the
   # environment assembled here IS the environment the build gets -- and
-  # herdr-statusline's build.sh is a `cargo build`, which needs both cargo and a
+  # herdr-file-viewer's fetch-or-build.sh falls back to a `cargo build` when
+  # there is no prebuilt asset for this platform, which needs both cargo and a
   # linker to be reachable from it.
   #
   # ~/.cargo/bin first: install_rust() prepends it only when it is the one doing
@@ -1592,7 +1586,6 @@ _install_herdr_plugin() {
   # asks for `cc` by name and would not find gcc or clang on its own.
   cargo_with_linker herdr plugin install "$1" -y >/dev/null 2>&1
 }
-install_herdr_statusline()  { _install_herdr_plugin iiii1224/herdr-statusline; }
 install_herdr_file_viewer() { _install_herdr_plugin smarzban/herdr-file-viewer; }
 
 # --- what the setup UI's previews need ------------------------------------
@@ -1686,7 +1679,8 @@ tools_plan() {
     route="$(tool_route "$id")"; method="${route%%|*}"; detail="${route#*|}"
     # Before the no-route check below: "na" is the normal, intended outcome for
     # a tool this machine has no business installing (Homebrew when nothing
-    # needs it, herdr-statusline on a Mac) than a machine that fell short.
+    # needs it, buildtools where nothing needs a compiler) than a machine that
+    # fell short.
     if [ "$method" = na ]; then
       printf '%s|skip|-|%s\n' "$id" "$detail"; continue
     fi

@@ -218,8 +218,8 @@ default_machine() {
 }
 MACHINE="$(default_machine)"
 
-# Status line components, shared by tmux's status bar and herdr-statusline (the
-# two are meant to stay visually identical -- see CLAUDE.md). TEMP is a sub-toggle
+# Status line components, shared by tmux's status bar and hsl's (bin/hsl, the
+# herdr wrapper -- the two are meant to stay visually identical, see CLAUDE.md). TEMP is a sub-toggle
 # of GPU: it only has an effect when the GPU pill itself is shown.
 SHOW_HOST=1
 SHOW_GPU=1
@@ -767,7 +767,7 @@ ask_choice() {
 }
 
 ask_components() {
-  section "Status line" "tmux bar + herdr-statusline"
+  section "Status line" "tmux bar + hsl bar"
   ask_bool SHOW_HOST     "  hostname pill"
   ask_bool SHOW_GPU      "  GPU usage pill"
   if [ "$SHOW_GPU" = 1 ]; then
@@ -924,7 +924,7 @@ show_preview() {
     printf '    \033[38;2;33;34;36m╰─\033[38;2;%sm \033[0m\n' "$chev_c"
   fi
 
-  # tmux / herdr-statusline: host, gpu, slurm, clock -- only the enabled pills,
+  # tmux / hsl: host, gpu, slurm, clock -- only the enabled pills,
   # and only as many of those as the terminal has room for. The widths are the
   # VISIBLE cell counts of each pill, counted from the literals below (the
   # escapes around them take no cells).
@@ -1083,13 +1083,10 @@ case "$LOGIN_SHELL" in
      echo "            To switch for good:  chsh -s \$(command -v $SHELL_FOR_RC)" ;;
 esac
 if [ "$HSL_LOGIN" = 1 ]; then
-  # hsl where it exists, plain herdr where it does not (every Mac -- the
-  # herdr-statusline plugin that ships hsl is Linux-only).
-  if is_mac; then
-    echo "  login     herdr starts at every interactive login (hsl is Linux-only)"
-  else
-    echo "  login     hsl (herdr + status line) starts at every interactive login"
-  fi
+  # hsl is this repo's own now (bin/hsl over a rendered tmux config), so it is
+  # on every machine that gets the config -- macOS included, which was the whole
+  # reason for replacing the Linux-only plugin.
+  echo "  login     hsl (herdr + status line) starts at every interactive login"
 else
   echo "  login     plain shell (herdr autostart off)"
 fi
@@ -1366,9 +1363,17 @@ render_script() {
 render        tmux/.tmux.conf.in        tmux/.tmux.conf '#'
 render_script tmux/other-sessions.sh.in tmux/other-sessions.sh
 render_script tmux/slurm-status.sh.in   tmux/slurm-status.sh
+# The GPU pill needs @SHOW_TEMP@, which no other tmux template does, but it is
+# otherwise an ordinary status helper and lives with the rest of them. Both
+# bars -- tmux's and hsl's -- call these three scripts at these paths, so there
+# is exactly one rendered copy of each and the two cannot show different
+# readings. gpu-status.sh no-ops on a machine with no nvidia-smi, so linking it
+# unconditionally is harmless even with SHOW_GPU=0, which simply never calls it.
+render_script tmux/gpu-status.sh.in     tmux/gpu-status.sh
 link "$GENERATED/tmux/.tmux.conf"        "$HOME/.tmux.conf"
 link "$GENERATED/tmux/other-sessions.sh" "$HOME/.tmux/other-sessions.sh"
 link "$GENERATED/tmux/slurm-status.sh"   "$HOME/.tmux/slurm-status.sh"
+link "$GENERATED/tmux/gpu-status.sh"     "$HOME/.tmux/gpu-status.sh"
 
 # --- claude ---
 link "$DOTFILES/claude/settings.json"        "$HOME/.claude/settings.json"
@@ -1405,26 +1410,39 @@ link "$DOTFILES/$FV_REL/markdown-monokai.json" "$FV_CONFIG/markdown-monokai.json
 render "$FV_REL/config.toml.in" "$FV_REL/config.toml" '#'
 link "$GENERATED/$FV_REL/config.toml" "$FV_CONFIG/config.toml"
 
-# herdr-statusline reproduces the tmux status line around a herdr session, so it
-# is themed from the same two colours and the same machine name.
-HSL_REL="herdr/plugins/herdr-statusline"
-HSL_CONFIG="$HERDR_CONFIG/plugins/config/herdr-statusline"
-render "$HSL_REL/config.toml.in" "$HSL_REL/config.toml" '#'
-link "$GENERATED/$HSL_REL/config.toml" "$HSL_CONFIG/config.toml"
-# The bar's right half IS the tmux bar's right half: the same rendered script,
-# linked a second time, so the two can never drift. The plugin only exports
-# $HERDR_PLUGIN_CONFIG_DIR to its `#(...)` commands, hence the link lives here
-# rather than the config pointing at ~/.tmux/.
-link "$GENERATED/tmux/slurm-status.sh" "$HSL_CONFIG/slurm-status.sh"
-# The GPU pill lives under the plugin's own template dir (it needs @SHOW_TEMP@,
-# which no tmux template needs), then gets linked a second time into ~/.tmux/ --
-# same reasoning as slurm-status.sh above, so tmux and herdr-statusline can never
-# show a different GPU reading. It no-ops on a machine with no nvidia-smi (e.g.
-# a login node), so linking it unconditionally is harmless even with SHOW_GPU=0
-# in the tmux/herdr status strings, which just never invoke it.
-render_script "$HSL_REL/gpu-status.sh.in" "$HSL_REL/gpu-status.sh"
-link "$GENERATED/$HSL_REL/gpu-status.sh" "$HSL_CONFIG/gpu-status.sh"
-link "$GENERATED/$HSL_REL/gpu-status.sh" "$HOME/.tmux/gpu-status.sh"
+# The status line hsl draws around a herdr session: the whole configuration of
+# the disposable tmux server bin/hsl starts, themed from the same two colours
+# and the same machine name as the tmux bar. This is what replaced the
+# herdr-statusline plugin -- see herdr/hsl.tmux.conf.in and bin/hsl. It is a
+# plain tmux config read with `tmux -f`, so nothing here needs the plugin, its
+# compiled hsl-config translator, cargo, or a C compiler, and it works on macOS
+# exactly as it does on Linux.
+#
+# bin/hsl is plain-copied to ~/.local/bin like everything else in bin/, and
+# looks for this file at this path.
+render herdr/hsl.tmux.conf.in herdr/hsl.tmux.conf '#'
+link "$GENERATED/herdr/hsl.tmux.conf" "$XDG_CONFIG/dotfiles/hsl.tmux.conf"
+
+# A machine set up before this repo grew its own hsl has the upstream plugin
+# installed and its config dir full of symlinks a previous run of this script
+# put there. Nothing reads them any more -- copy() has already backed the
+# plugin's own ~/.local/bin/hsl launcher up and taken the name over -- so clear
+# them out rather than leaving them to be puzzled over later.
+#
+# The test is "does it point into our .generated/", not "is it broken": two of
+# the three (config.toml, gpu-status.sh) dangle because their targets moved or
+# stopped being rendered, but slurm-status.sh still resolves perfectly well to a
+# file the tmux bar goes on using. Live or dead, we made it and nothing reads it.
+# Anything else in that directory is the plugin's own and is left alone.
+OLD_HSL_CONFIG="$HERDR_CONFIG/plugins/config/herdr-statusline"
+for stale in config.toml gpu-status.sh slurm-status.sh; do
+  old="$OLD_HSL_CONFIG/$stale"
+  [ -L "$old" ] || continue
+  case "$(readlink "$old")" in
+    "$GENERATED"/*) rm -f "$old" ;;
+  esac
+done
+unset stale old
 
 # herdr-workspace-prefix is OURS (it lives in this repo, unlike the third-party
 # plugins), so it is linked here rather than left to a per-machine step. `plugin
@@ -1621,6 +1639,17 @@ echo "    keep those per-machine or in a separate per-project config."
 echo "  - herdr: 'herdr server reload-config' picks up a config change without restarting."
 echo "    The file viewer's Monokai content pane needs bat, delta and glow on PATH; the"
 echo "    tools phase installs all three, and without them the viewer falls back to plain text."
+# Only on a machine set up before this repo grew its own hsl. The plugin is
+# inert now (bin/hsl has taken the ~/.local/bin/hsl name over, and its old
+# launcher is sitting beside it as hsl.bak), but it is several hundred MB of
+# Rust checkout and build output, so it is worth saying it can go.
+if command -v herdr >/dev/null 2>&1 &&
+   herdr plugin list 2>/dev/null | grep -q herdr-statusline; then
+  echo "  - NOTE: the old herdr-statusline plugin is still installed here. The status"
+  echo "    line is bin/hsl now -- a shell script over a rendered tmux config, no Rust"
+  echo "    and no plugin -- so the plugin is unused. To reclaim its checkout and build"
+  echo "    output:  herdr plugin uninstall herdr-statusline"
+fi
 echo "  - Tools are installed by whichever route this machine can use (apt with sudo;"
 echo "    rustup/cargo, uv, release tarballs, git or Homebrew without). './install.sh"
 echo "    --reconfigure' lets you deselect any of them; 'bash lib/tools.sh --plan' shows"
@@ -1631,15 +1660,13 @@ if [ "$HSL_LOGIN" = 1 ]; then
     echo "    'NO_HSL=1 $HSL_ESCAPE_SHELL -l' gets you a plain shell; quitting herdr drops you"
     echo "    into one too (it is run, not exec'd, so a login can't be lost to it)."
   elif command -v herdr >/dev/null 2>&1; then
-    # hsl ships with herdr-statusline, whose manifest is platforms = ["linux"],
-    # so on a Mac it is never there. The autostart falls back to plain herdr
-    # rather than doing nothing -- see shell/hsl-login.sh.in.
+    # bin/hsl is copied to ~/.local/bin by this script, so this branch now means
+    # that directory is not on PATH yet rather than that hsl does not exist. The
+    # autostart falls back to plain herdr rather than doing nothing -- see
+    # shell/hsl-login.sh.in.
     echo "  - herdr will start at every interactive login. ('hsl' -- herdr plus the"
-    if is_mac; then
-      echo "    status line -- is Linux-only, so this machine gets herdr on its own.)"
-    else
-      echo "    status line -- is not on PATH here, so it is plain herdr for now.)"
-    fi
+    echo "    status line -- is not on PATH here yet, so it is plain herdr for now;"
+    echo "    the PATH line below fixes that.)"
     echo "    'NO_HSL=1 $HSL_ESCAPE_SHELL -l' gets you a plain shell; quitting herdr drops you"
     echo "    into one too (it is run, not exec'd, so a login can't be lost to it)."
   else

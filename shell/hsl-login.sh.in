@@ -55,15 +55,18 @@ case $- in *i*) ;; *) return 0 ;; esac
 case "${TERM:-dumb}" in dumb|unknown|"") return 0 ;; esac
 
 # And there has to be something to run. hsl is herdr plus the status line, and
-# it ships with the herdr-statusline plugin -- a separate answer in the wizard,
-# and one that has NO macOS build at all (the plugin's manifest is
-# platforms = ["linux"], so tool_route reports `na|linux only` there). On a Mac
-# this used to mean the autostart answer did nothing whatsoever, silently.
+# it is now this repo's own (bin/hsl, plain-copied to ~/.local/bin like anything
+# else in bin/), so it is on every machine that got the config -- macOS
+# included. It used to be the launcher shipped by the herdr-statusline plugin,
+# whose manifest is platforms = ["linux"], which meant this whole answer did
+# nothing whatsoever on a Mac, silently. That is what bin/hsl fixed.
 #
-# So fall back to plain herdr. The answer is "start my workspace manager when I
-# open a terminal"; the status line is a detail of how that workspace looks, not
-# the thing being asked for. herdr with no arguments launches or attaches to the
-# persistent session, which is exactly what hsl wraps.
+# The fallback to plain herdr stays anyway, for the window where ~/.local/bin is
+# not on PATH yet (a first install, before the shell has been re-sourced). The
+# answer is "start my workspace manager when I open a terminal"; the status line
+# is a detail of how that workspace looks, not the thing being asked for. herdr
+# with no arguments launches or attaches to the same persistent session hsl
+# wraps -- and bin/hsl itself degrades the same way if tmux is missing.
 #
 # Both names are unset again afterwards: this file is SOURCED into the user's
 # interactive shell, so anything left behind is a variable in their environment

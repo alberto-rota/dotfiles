@@ -264,8 +264,9 @@ derive() {
     <<<"$(claude_ramp)"
 
   # --- status line assembly -------------------------------------------------------
-  # tmux's status bar and herdr-statusline are meant to look identical (see
-  # CLAUDE.md), so both are assembled here from the same SHOW_* toggles rather
+  # tmux's status bar and hsl's (bin/hsl, the herdr wrapper) are meant to look
+  # identical (see CLAUDE.md), so both are assembled here from the same
+  # SHOW_* toggles rather
   # than templated with sed conditionals, which tmux.conf/toml have no syntax for.
   # Colours are baked in as literal hex, same reasoning as the OMP_* colours above.
   # The powerline glyphs (U+E0BA/E0BC/E0BB) match the ones already hand-placed in
@@ -284,8 +285,8 @@ derive() {
 
   # "#00000t0" below is the same deliberate typo the untouched original right side
   # had: it makes tmux drop that one style (invisible, since it only covers a
-  # space) rather than paint a visible box -- see herdr-statusline/config.toml.in,
-  # which spells the same spot correctly since its layout differs slightly.
+  # space) rather than paint a visible box -- the hsl half below spells the same
+  # spot correctly, since its layout differs slightly.
   TMUX_STATUS_RIGHT="#[fg=$PRIMARY,bg=#000000]${SEP}#[fg=#ffffff,bg=#00000t0] "
   [ "${SHOW_GPU:-1}" = 1 ]   && TMUX_STATUS_RIGHT+='#(~/.tmux/gpu-status.sh)'
   [ "${SHOW_SLURM:-1}" = 1 ] && TMUX_STATUS_RIGHT+='#(~/.tmux/slurm-status.sh)'
@@ -300,9 +301,15 @@ derive() {
     HSL_STATUS_LEFT="#[fg=$PRIMARY,bg=#000000]${CAP}#[fg=$SECONDARY,bg=#000000,bold] ${USER_NAME}#[fg=#ffffff,bg=#000000,bold]@${MACHINE} #[fg=#000000,bg=$PRIMARY]${SEP}"
   fi
 
+  # The same two scripts the tmux bar above calls, at the same paths. They used
+  # to be reached through $HERDR_PLUGIN_CONFIG_DIR, because the herdr-statusline
+  # plugin exported only that to its `#(...)` commands and so the scripts had to
+  # be linked into its config dir. bin/hsl runs a tmux server we configure
+  # ourselves, so that constraint is gone and both bars can name one path -- one
+  # fewer way for them to drift, and one fewer copy of each script to link.
   HSL_STATUS_RIGHT="#[fg=$PRIMARY,bg=#000000]${SEP}#[fg=#ffffff,bg=#000000] "
-  [ "${SHOW_GPU:-1}" = 1 ]   && HSL_STATUS_RIGHT+='#($HERDR_PLUGIN_CONFIG_DIR/gpu-status.sh)'
-  [ "${SHOW_SLURM:-1}" = 1 ] && HSL_STATUS_RIGHT+='#($HERDR_PLUGIN_CONFIG_DIR/slurm-status.sh)'
+  [ "${SHOW_GPU:-1}" = 1 ]   && HSL_STATUS_RIGHT+='#(~/.tmux/gpu-status.sh)'
+  [ "${SHOW_SLURM:-1}" = 1 ] && HSL_STATUS_RIGHT+='#(~/.tmux/slurm-status.sh)'
   HSL_STATUS_RIGHT+="#[fg=#000000,bg=$PRIMARY]${SEP}"
   if [ "${SHOW_DATETIME:-1}" = 1 ]; then
     HSL_STATUS_RIGHT+="#[fg=#000000,bg=$PRIMARY,bold] %H:%M #[fg=#000000,bg=$PRIMARY,bold]${SEP2} %Y-%m-%d "

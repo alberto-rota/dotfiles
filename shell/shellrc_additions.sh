@@ -172,8 +172,9 @@ if [ "$DOTFILES_INTERACTIVE" = 1 ]; then
     esac
   fi
 fi
-command -v eza >/dev/null 2>&1 && alias ls="eza -lh --tree --level=1 --git --icons"
-
+if command -v eza >/dev/null 2>&1; then
+  ls() { eza "$@" -lh --tree --level=1 --git --icons; }
+fi
 # Debian and Ubuntu ship these two under different names, because the obvious
 # ones were already taken by unrelated packages. Aliased only when the real
 # name is missing, so a machine that got them from cargo/brew (where they are

@@ -1,0 +1,68 @@
+#>> TEMPLATE -- rendered by install.sh with @PRIMARY@ / @HSL_STATUS_LEFT@ /
+#>> @HSL_STATUS_RIGHT@ substituted. Edit THIS file, not the rendered config.
+#>> #>> lines are stripped.
+#>>
+#>> This is the entire configuration of the disposable tmux server that bin/hsl
+#>> starts to draw a status line around a herdr session. It replaces the
+#>> herdr-statusline plugin's config.toml + its compiled hsl-config translator:
+#>> that plugin's Rust binary existed only to turn a [statusline] TOML table
+#>> into the `set-option` lines below, and lib/derive.sh already assembles this
+#>> repo's bar as literal tmux format strings, so there is nothing left to
+#>> translate. tmux reads this file directly with -f. No cargo, no compiler, and
+#>> nothing that only exists on Linux -- which is the whole point.
+#>>
+#>> The bar is tmux/.tmux.conf.in's, segment for segment, minus the session
+#>> list. The left half never repeats session/workspace names: tmux lists
+#>> sessions because it has nowhere else to show them, while herdr's sidebar
+#>> already names every workspace, so repeating them here would be the same
+#>> information twice. Both halves come entirely from @HSL_STATUS_LEFT@ /
+#>> @HSL_STATUS_RIGHT@, which lib/derive.sh builds from the same SHOW_HOST /
+#>> SHOW_GPU / SHOW_TEMP / SHOW_SLURM / SHOW_DATETIME toggles as tmux's bar, so
+#>> the two can never drift apart -- see the "status line assembly" section
+#>> there. The GPU and Slurm pills shell out to the very same rendered scripts
+#>> under ~/.tmux/ that the tmux bar calls.
+
+# --- a server that does nothing but draw ------------------------------------
+# No prefix and no bindings at all: every keystroke belongs to herdr, which is
+# running full-screen in the single pane. A stray tmux binding here would eat a
+# key herdr had bound.
+set-option -g prefix None
+set-option -g prefix2 None
+unbind-key -a
+set-option -g mouse off
+set-option -g remain-on-exit off
+set-option -g detach-on-destroy on
+set-option -g focus-events on
+set-option -sg escape-time 0
+# Let the OSC 52 herdr emits reach the outer terminal's clipboard.
+set-option -s set-clipboard on
+# `#W` must not drift: automatic-rename follows whatever program is running.
+set-option -gw automatic-rename off
+
+# Two-stage teardown. The session is created detached so bin/hsl can finish
+# configuring the server, which requires `off` here -- applying it after
+# new-session is impossible, because with `on` tmux would already have destroyed
+# an unattached session and taken the server with it. The hook flips the policy
+# the moment a client shows up, so a disconnect always tears the session down.
+set-option -g destroy-unattached off
+set-hook -g client-attached "set-option -g destroy-unattached on"
+
+# --- the bar ----------------------------------------------------------------
+set-option -g status on
+set-option -g status-interval 1
+set-option -g status-position bottom
+set-option -g status-justify left
+set-option -g status-style "bg=@PRIMARY@"
+
+# LEFT: the user@machine pill (when SHOW_HOST), and nothing else.
+set-option -g status-left-length 120
+set-option -g status-left "@HSL_STATUS_LEFT@"
+
+# WINDOW LIST: empty, as in tmux. This server has exactly one window and the
+# tmux config hides its window list too, so both bars show nothing here.
+set-option -gw window-status-format ""
+set-option -gw window-status-current-format ""
+
+# RIGHT: GPU + Slurm + time + date, whichever SHOW_* toggles enabled.
+set-option -g status-right-length 200
+set-option -g status-right "@HSL_STATUS_RIGHT@"

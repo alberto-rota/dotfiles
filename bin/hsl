@@ -1,0 +1,302 @@
+#!/bin/sh
+# hsl -- herdr with a status line, on any machine that has tmux.
+#
+# A substitute for the `hsl` launcher that ships with the herdr-statusline
+# plugin (iiii1224/herdr-statusline, MIT). The mechanism below is that plugin's,
+# and is_interactive() is adapted from its bin/hsl-internal. What is gone is
+# everything that made it Linux-only:
+#
+#   - No Rust. The plugin compiles `hsl-config`, whose entire job is to turn a
+#     [statusline] TOML table into `tmux set-option` name/value pairs.
+#     lib/derive.sh in this repo already assembles both status bars as literal
+#     tmux format strings, so that translation step has nothing left to
+#     translate: the rendered hsl.tmux.conf IS the answer, and tmux reads it
+#     with -f. No cargo, no C compiler, no plugin registration, nothing to
+#     build. The only requirement left is tmux, which macOS has too -- so the
+#     plugin manifest's `platforms = ["linux"]` stops applying to us.
+#   - No plugin state to consult. The plugin has to ask herdr where its config
+#     dir is and whether it is still enabled; this reads one rendered file at a
+#     fixed path.
+#
+# What it does: run herdr inside a private, disposable, status-line-only tmux
+# server. herdr owns the whole terminal except the bottom row, which is tmux's
+# status line, drawn from this repo's colours and SHOW_* toggles -- the same
+# ones the real tmux bar is built from, so the two cannot drift. The server
+# exists for exactly one herdr session and is killed on the way out.
+#
+# Anything that is not an interactive session -- `hsl session list`,
+# `hsl --version`, `hsl plugin ...` -- is handed straight to herdr with no tmux
+# anywhere near it.
+set -u
+
+HERDR_BIN=${HSL_HERDR_BIN:-herdr}
+TMUX_BIN=${HSL_TMUX_BIN:-tmux}
+HSL_CONF=${HSL_CONF:-${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/hsl.tmux.conf}
+SESSION_NAME=hsl
+WINDOW_NAME=herdr
+STDERR_REPLAY_LIMIT=20
+
+: "${HOME:?hsl: HOME is not set}"
+
+note() { printf 'hsl: %s\n' "$1" >&2; }
+
+# --- which command lines want a status line -------------------------------
+# Adapted from herdr-statusline's bin/hsl-internal. Anything not listed here
+# stays a direct pass-through, so a herdr subcommand this script has never
+# heard of keeps working.
+is_interactive() {
+    # A bare `hsl` attaches to the persistent session.
+    [ "$#" -eq 0 ] && return 0
+
+    # Two of herdr's global options may precede an interactive form, but only
+    # when --remote is also present (herdr itself rejects `--handoff --session
+    # foo` and `--remote-keybindings local --session foo`). So both are skipped
+    # together, gated on --remote -- skipping either without one would wrap a
+    # command herdr refuses to run in a tmux server for nothing. The
+    # terminating globals (--version, --help, --default-config) are never
+    # skipped, for the same reason.
+    remote_attach=1
+    for scan_arg in "$@"; do
+        case $scan_arg in
+            --remote|--remote=*) remote_attach=0; break ;;
+        esac
+    done
+
+    skipped=0
+    while [ "$remote_attach" -eq 0 ] && [ "$#" -gt 0 ]; do
+        case $1 in
+            --handoff|--remote-keybindings=*)
+                shift; skipped=$((skipped + 1)) ;;
+            --remote-keybindings)
+                # The separated form takes a value; consume it when present so
+                # the token after it is not mistaken for the deciding form.
+                shift; skipped=$((skipped + 1))
+                [ "$#" -gt 0 ] && shift ;;
+            *) break ;;
+        esac
+    done
+
+    # Only global options were given, e.g. `hsl --handoff`. herdr rejects those,
+    # so let it say so instead of starting a tmux server for nothing.
+    [ "$#" -eq 0 ] && return 1
+
+    case $1 in
+        --session|--remote|--no-session|--session=*|--remote=*) return 0 ;;
+        session|agent|terminal)
+            # Only when nothing was skipped: herdr reads `session attach <name>`
+            # positionally from the original argv.
+            [ "$skipped" -eq 0 ] && [ "${2:-}" = attach ] && return 0
+            return 1 ;;
+        *) return 1 ;;
+    esac
+}
+
+if ! is_interactive "$@"; then
+    exec "$HERDR_BIN" "$@"
+fi
+
+command -v "$HERDR_BIN" >/dev/null 2>&1 || {
+    note 'herdr is not on PATH'
+    exit 127
+}
+
+# Both of the below degrade to plain herdr rather than refusing to start. This
+# script is what the login autostart runs (shell/hsl-login.sh.in), and a missing
+# status line is not a reason to deny somebody their workspace manager -- but it
+# is said out loud, because silently doing nothing is exactly the failure this
+# whole substitute exists to fix.
+if ! command -v "$TMUX_BIN" >/dev/null 2>&1; then
+    note 'tmux is not on PATH -- starting herdr without a status line'
+    exec "$HERDR_BIN" "$@"
+fi
+if [ ! -r "$HSL_CONF" ]; then
+    note "no status line config at $HSL_CONF"
+    note 're-run install.sh from the dotfiles checkout; starting plain herdr'
+    exec "$HERDR_BIN" "$@"
+fi
+
+# The tmux server inherits this environment and hands it to the pane, and herdr
+# refuses to start when HERDR_SESSION is set but empty. Drop it entirely so an
+# unnamed run reaches herdr with no session name at all.
+if [ -z "${HERDR_SESSION:-}" ]; then
+    unset HERDR_SESSION
+fi
+
+# --- TERM ------------------------------------------------------------------
+# herdr draws with hardcoded ANSI and never opens the terminfo database, so it
+# runs under any TERM. A tmux client does open it, and aborts with "missing or
+# unsuitable terminal" when the entry is absent -- routine on terminals newer
+# than the installed ncurses (xterm-ghostty, xterm-rio), and on macOS where
+# Terminal.app and iTerm set TERM values a Homebrew ncurses may not carry.
+term_known() {
+    [ -n "$1" ] || return 1
+    if command -v tput >/dev/null 2>&1; then
+        tput -T "$1" longname >/dev/null 2>&1 && return 0
+    fi
+    if command -v infocmp >/dev/null 2>&1; then
+        infocmp -- "$1" >/dev/null 2>&1 && return 0
+    fi
+    return 1
+}
+
+# Only a confirmed entry is ever substituted, so a host with neither tput nor
+# infocmp keeps its TERM and lets tmux report the problem itself.
+if [ -n "${TERM:-}" ] && ! term_known "$TERM"; then
+    # Quoted so a stray space or glob in the override cannot expand into extra
+    # candidates.
+    for candidate in "${HSL_FALLBACK_TERM:-}" xterm-256color xterm; do
+        term_known "$candidate" || continue
+        printf 'hsl: no terminfo entry for %s; using %s for tmux\n' \
+            "$TERM" "$candidate" >&2
+        TERM=$candidate
+        export TERM
+        break
+    done
+fi
+
+# --- the disposable server -------------------------------------------------
+umask 077
+runtime=$(mktemp -d "${TMPDIR:-/tmp}/hsl.XXXXXX") || {
+    note 'cannot create a runtime directory'
+    exit 1
+}
+# The socket must be unique per invocation; the session name must not be, and
+# must not contain a dot, or `-t` parses it as session.window.pane.
+socket="hsl-$(basename "$runtime")"
+launcher=$runtime/launch.sh
+exit_file=$runtime/exit-status
+stderr_file=$runtime/stderr
+
+cleanup() {
+    "$TMUX_BIN" -L "$socket" kill-server >/dev/null 2>&1 || true
+    rm -rf "$runtime"
+}
+
+# A failing herdr often prints one line and exits before it draws anything, and
+# the pane is gone by the time we could read it -- so its stderr is kept on disk
+# and replayed here. A successful session stays silent: stray output would only
+# be terminal noise.
+replay_stderr() {
+    [ "$1" -ne 0 ] || return 0
+    [ -s "$stderr_file" ] || return 0
+    lines=$(wc -l <"$stderr_file")
+    if [ "$lines" -gt "$STDERR_REPLAY_LIMIT" ]; then
+        printf 'hsl: showing the last %s of %s stderr lines\n' \
+            "$STDERR_REPLAY_LIMIT" "$lines" >&2
+    fi
+    tail -n "$STDERR_REPLAY_LIMIT" "$stderr_file" >&2
+}
+
+recorded_status() {
+    [ -f "$exit_file" ] || return 1
+    saved_status=$(sed -n '1p' "$exit_file")
+    case $saved_status in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    printf '%s\n' "$saved_status"
+}
+
+on_signal() {
+    if final_status=$(recorded_status); then :; else final_status=$1; fi
+    trap - EXIT HUP INT TERM
+    cleanup
+    exit "$final_status"
+}
+
+trap cleanup EXIT
+trap 'on_signal 129' HUP
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
+
+# POSIX single-quote quoting, so herdr's argv survives being written into a
+# shell script verbatim. The x sentinel is there because command substitution
+# strips trailing newlines and an argument is allowed to end in one.
+shell_quote() {
+    _q=$(printf '%s' "$1" | sed "s/'/'\\\\''/g"; printf x)
+    _q=${_q%x}
+    printf "'%s'" "$_q"
+}
+
+quoted_argv=$(shell_quote "$HERDR_BIN")
+for arg in "$@"; do
+    quoted_argv="$quoted_argv $(shell_quote "$arg")"
+done
+
+{
+    printf '#!/bin/sh\n'
+    printf 'set -u\n'
+    # tmux destroys the pane the instant this exits, taking any diagnostics with
+    # it, so stderr goes to disk for the replay above.
+    printf 'exec 2>%s\n' "$(shell_quote "$stderr_file")"
+    printf '%s\n' "$quoted_argv"
+    printf 'status=$?\n'
+    # Written then moved, so the parent never reads a half-written status.
+    printf 'echo "$status" >%s.tmp\n' "$(shell_quote "$exit_file")"
+    printf 'mv %s.tmp %s\n' "$(shell_quote "$exit_file")" "$(shell_quote "$exit_file")"
+    printf 'exit "$status"\n'
+} >"$launcher"
+chmod 700 "$launcher"
+
+# A pseudo terminal with no backing terminal reports "0 0", and passing that to
+# tmux fails with "width too small", so every value is validated first.
+size=$(stty size 2>/dev/null </dev/tty) || size=
+rows=${size% *}
+cols=${size#* }
+case ${rows:-x} in ''|*[!0-9]*) size= ;; esac
+case ${cols:-x} in ''|*[!0-9]*) size= ;; esac
+if [ -n "$size" ] && { [ "$rows" -lt 3 ] || [ "$cols" -lt 10 ]; }; then
+    size=
+fi
+
+# `-f` has to ride on new-session, and it is worth knowing why: `tmux -f conf
+# start-server` SILENTLY IGNORES the file and loads ~/.tmux.conf instead. Doing
+# it that way brings the server up fully configured before the pane exists,
+# which is tidy -- and it drew this repo's tmux bar around herdr, machine name
+# and all, because the hsl config had never been read. It looks close enough to
+# be missed at a glance. Keep the -f here.
+#
+# TMUX is unset in every subshell that talks to the server: hsl is perfectly
+# likely to be run from inside somebody else's tmux, and tmux refuses to nest
+# without it.
+(
+    unset TMUX
+    if [ -n "$size" ]; then
+        exec "$TMUX_BIN" -L "$socket" -f "$HSL_CONF" new-session -d \
+            -s "$SESSION_NAME" -n "$WINDOW_NAME" -x "$cols" -y "$rows" \
+            "exec $(shell_quote "$launcher")"
+    else
+        exec "$TMUX_BIN" -L "$socket" -f "$HSL_CONF" new-session -d \
+            -s "$SESSION_NAME" -n "$WINDOW_NAME" \
+            "exec $(shell_quote "$launcher")"
+    fi
+) || {
+    note 'could not start the status line tmux server'
+    exit 1
+}
+
+# The one option that cannot live in the config file: it does not exist on older
+# tmux, and an unknown option in a config makes tmux pop an error message over
+# the session -- which is exactly what an HPC login node stuck on tmux 2.x would
+# get. Set from outside instead, where it can fail quietly, and detected by
+# setting it rather than by parsing `tmux -V`. herdr emits passthrough sequences
+# (OSC 52 clipboard, image protocols) that tmux would otherwise swallow.
+#
+# This lands a moment after herdr starts rather than before, and that is a
+# deliberate trade. Ordering it first needs the plugin's `wait-for` handshake,
+# where the launcher runs `wait-for || exit 1` -- so any hiccup in the handshake
+# kills herdr outright instead of costing one swallowed escape sequence in the
+# first few milliseconds of a session. Cheap failure beats rare catastrophic one.
+"$TMUX_BIN" -L "$socket" set-option -g allow-passthrough on >/dev/null 2>&1 || true
+
+if (
+    unset TMUX
+    exec "$TMUX_BIN" -L "$socket" attach-session -t "$SESSION_NAME"
+); then
+    tmux_status=0
+else
+    tmux_status=$?
+fi
+
+if status=$(recorded_status); then :; else status=$tmux_status; fi
+replay_stderr "$status"
+exit "$status"
