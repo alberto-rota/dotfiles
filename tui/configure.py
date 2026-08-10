@@ -401,6 +401,14 @@ def placeholders(derived: dict[str, str], answers: Answers) -> dict[str, str]:
         "OMP_TEXT_COLOR": derived["OMP_TEXT_COLOR"],
         "OMP_CHEVRON_FG": derived["OMP_CHEVRON_FG"],
         "OMP_CHEVRON_ERR": derived["OMP_CHEVRON_ERR"],
+        "OMP_PATH_COLOR": derived["OMP_PATH_COLOR"],
+        "OMP_TIME_COLOR": derived["OMP_TIME_COLOR"],
+        "OMP_PY_COLOR": derived["OMP_PY_COLOR"],
+        "OMP_GIT_CLEAN": derived["OMP_GIT_CLEAN"],
+        "OMP_GIT_BEHIND": derived["OMP_GIT_BEHIND"],
+        "OMP_GIT_AHEAD": derived["OMP_GIT_AHEAD"],
+        "OMP_GIT_DIVERGED": derived["OMP_GIT_DIVERGED"],
+        "OMP_GIT_DIRTY": derived["OMP_GIT_DIRTY"],
         "TMUX_STATUS_LEFT": derived["TMUX_STATUS_LEFT"],
         "TMUX_STATUS_RIGHT": derived["TMUX_STATUS_RIGHT"],
         "HSL_STATUS_LEFT": derived["HSL_STATUS_LEFT"],
@@ -723,7 +731,7 @@ class Previewer:
         out = Text()
         out.append(" ", Style(color=derived["OMP_ICON_COLOR"], bgcolor=panel))
         out.append(f" {derived['MACHINE_LOWER']} ", Style(color=derived["OMP_TEXT_COLOR"], bgcolor=panel))
-        out.append(" ~/dotfiles ", Style(color="#5fafd7", bgcolor=panel))
+        out.append(" ~/dotfiles ", Style(color=derived["OMP_PATH_COLOR"], bgcolor=panel))
         out.append("\n")
         out.append("╰─", Style(color=panel))
         out.append(" ", Style(color=derived["OMP_CHEVRON_FG"]))
@@ -800,12 +808,14 @@ class Previewer:
     def herdr(self, derived: dict[str, str], width: int) -> Text:
         """A drawing, unlike the other panes -- herdr cannot render one frame
         into a string. Every colour in it is a real derived value though:
-        `accent` (the primary) paints the window and pane borders and the agent
-        labels on them, and `surface_dim` (the darkened primary) paints both the
-        sidebar rail and the selected workspace row -- the one token herdr routes
-        both of those through, which is why it has to be darkened.
+        `accent` (the SECONDARY -- herdr's one accent token, which the config
+        sets so the active tab label reads in the secondary) paints that tab,
+        the window and pane borders and the agent labels on them, and
+        `surface_dim` (the darkened primary) paints both the sidebar rail and
+        the selected workspace row -- the one token herdr routes both of those
+        through, which is why it has to be darkened.
         """
-        accent = derived["PRIMARY"]
+        accent = derived["SECONDARY"]
         dim = derived["PRIMARY_DIM"]
         secondary = derived["SECONDARY"]
         machine = derived["MACHINE_LOWER"]
@@ -855,8 +865,16 @@ class Previewer:
         title.append(" herdr ", Style(color=accent, bold=True))
         title.append(f"{user}@{machine} ", Style(color=muted))
         hline("╭", "╮", "┬")
+        # The tab bar: the active tab is black-on-accent (herdr's one accent
+        # token), and an unnamed first tab is called after this machine by the
+        # herdr-workspace-prefix feeder rather than showing its number.
+        tab_bar = Text()
+        tab_bar.append(" ", Style(bgcolor=panel))
+        tab_bar.append(f" {machine} ", Style(color="#000000", bgcolor=accent))
+        tab_bar.append(" 2 ", Style(color=muted, bgcolor="#3c3836"))
+        tab_bar.append(" + ", Style(color=muted, bgcolor=panel))
         row(side(" SPACES", Style(color=muted, bgcolor=panel, bold=True)),
-            body("  ~/dotfiles", Style(color=fg, bgcolor=panel, bold=True)))
+            tab_bar)
         # The selected workspace: name on surface_dim, the marker glyph in front
         # of it in the secondary colour (herdr-workspace-prefix's token).
         selected = Text()

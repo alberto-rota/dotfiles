@@ -1,8 +1,8 @@
 id = "herdr-workspace-prefix"
 name = "Workspace prefix"
-version = "0.1.0"
+version = "0.2.0"
 min_herdr_version = "0.7.0"
-description = "Keep a literal prefix token on every workspace, for the sidebar to render"
+description = "Keep a literal prefix token on every workspace, and name each workspace's first tab after this machine"
 platforms = ["linux", "macos"]
 
 # herdr's sidebar rows only accept KNOWN tokens -- a literal string in `rows` is

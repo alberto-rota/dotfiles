@@ -848,6 +848,14 @@ omp_live_preview() {
       -e "s|@OMP_TEXT_COLOR@|$OMP_TEXT_COLOR|g" \
       -e "s|@OMP_CHEVRON_FG@|$OMP_CHEVRON_FG|g" \
       -e "s|@OMP_CHEVRON_ERR@|$OMP_CHEVRON_ERR|g" \
+      -e "s|@OMP_PATH_COLOR@|$OMP_PATH_COLOR|g" \
+      -e "s|@OMP_TIME_COLOR@|$OMP_TIME_COLOR|g" \
+      -e "s|@OMP_PY_COLOR@|$OMP_PY_COLOR|g" \
+      -e "s|@OMP_GIT_CLEAN@|$OMP_GIT_CLEAN|g" \
+      -e "s|@OMP_GIT_BEHIND@|$OMP_GIT_BEHIND|g" \
+      -e "s|@OMP_GIT_AHEAD@|$OMP_GIT_AHEAD|g" \
+      -e "s|@OMP_GIT_DIVERGED@|$OMP_GIT_DIVERGED|g" \
+      -e "s|@OMP_GIT_DIRTY@|$OMP_GIT_DIRTY|g" \
       "$DOTFILES/oh-my-posh/albe-monokai2.omp.json.in" > "$tmp"
 
   # --terminal-width so oh-my-posh lays its right-hand block out for the space
@@ -1323,6 +1331,14 @@ render() {
         -e "s|@OMP_TEXT_COLOR@|$OMP_TEXT_COLOR|g" \
         -e "s|@OMP_CHEVRON_FG@|$OMP_CHEVRON_FG|g" \
         -e "s|@OMP_CHEVRON_ERR@|$OMP_CHEVRON_ERR|g" \
+        -e "s|@OMP_PATH_COLOR@|$OMP_PATH_COLOR|g" \
+        -e "s|@OMP_TIME_COLOR@|$OMP_TIME_COLOR|g" \
+        -e "s|@OMP_PY_COLOR@|$OMP_PY_COLOR|g" \
+        -e "s|@OMP_GIT_CLEAN@|$OMP_GIT_CLEAN|g" \
+        -e "s|@OMP_GIT_BEHIND@|$OMP_GIT_BEHIND|g" \
+        -e "s|@OMP_GIT_AHEAD@|$OMP_GIT_AHEAD|g" \
+        -e "s|@OMP_GIT_DIVERGED@|$OMP_GIT_DIVERGED|g" \
+        -e "s|@OMP_GIT_DIRTY@|$OMP_GIT_DIRTY|g" \
         -e "s|@CLAUDE_MODEL_RGB@|$CLAUDE_MODEL_RGB|g" \
         -e "s|@CLAUDE_EFFORT_RGB@|$CLAUDE_EFFORT_RGB|g" \
         -e "s|@CLAUDE_USAGE_RGB@|$CLAUDE_USAGE_RGB|g" \

@@ -177,7 +177,7 @@ if command -v eza >/dev/null 2>&1; then
 fi
 # Debian and Ubuntu ship these two under different names, because the obvious
 # ones were already taken by unrelated packages. Aliased only when the real
-# name is missing, so a machine that got them from cargo/brew (where they are
+# name is missing, Fffso a machine that got them from cargo/brew (where they are
 # called bat and fd) is left alone -- and so the alias never shadows a newer
 # binary that install.sh put in ~/.local/bin or ~/.cargo/bin.
 command -v bat >/dev/null 2>&1 || { command -v batcat >/dev/null 2>&1 && alias bat="batcat"; }

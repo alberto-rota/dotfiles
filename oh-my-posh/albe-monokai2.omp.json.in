@@ -40,7 +40,7 @@
             "leading_diamond": "<transparent,#212224></>",
             "trailing_diamond": "",
             "template": "{{ .Path }} ",
-            "foreground": "#5fafd7",
+            "foreground": "@OMP_PATH_COLOR@",
             "background": "#212224",
             "type": "path",
             "style": "diamond"
@@ -55,16 +55,24 @@
               "fetch_worktree_count": true
             },
             "template": " {{ url .UpstreamIcon .UpstreamURL }} {{ .HEAD }}{{if .BranchStatus }} {{ .BranchStatus }}{{ end }}{{ if .Working.Changed }} \uf044 {{ .Working.String }}{{ end }}{{ if and (.Working.Changed) (.Staging.Changed) }} |{{ end }}{{ if .Staging.Changed }} \uf046 {{ .Staging.String }}{{ end }}{{ if gt .StashCount 0 }} \ueb4b {{ .StashCount }}{{ end }} ",
-            "foreground": "#118AB2",
+            "foreground": "@OMP_GIT_CLEAN@",
             "powerline_symbol": "",
             "background": "#212224",
             "type": "git",
             "style": "powerline",
+#>> All five git colours are the SAME hue and saturation at five lightnesses (see
+#>> accent_ramps() in lib/derive.sh): the segment reports the branch state by
+#>> getting brighter the more there is to deal with, rather than by jumping to an
+#>> unrelated colour. @OMP_GIT_CLEAN@, the base above, is the dimmest of them.
+#>>
+#>> ORDER MATTERS, AND IS MOST-SEVERE-FIRST: oh-my-posh takes the FIRST of these
+#>> that renders non-empty, so a tree that is both dirty and ahead reads as dirty.
+#>> Reversing them would leave dirty unreachable on any branch with an upstream.
             "foreground_templates": [
-              "{{ if or (.Working.Changed) (.Staging.Changed) }}#EF476F{{ end }}",
-              "{{ if and (gt .Ahead 0) (gt .Behind 0) }} #F78C6C {{ end }}",
-              "{{ if gt .Ahead 0 }}#C792EA{{ end }}",
-              "{{ if gt .Behind 0 }}#c792ea{{ end }}"
+              "{{ if or (.Working.Changed) (.Staging.Changed) }}@OMP_GIT_DIRTY@{{ end }}",
+              "{{ if and (gt .Ahead 0) (gt .Behind 0) }}@OMP_GIT_DIVERGED@{{ end }}",
+              "{{ if gt .Ahead 0 }}@OMP_GIT_AHEAD@{{ end }}",
+              "{{ if gt .Behind 0 }}@OMP_GIT_BEHIND@{{ end }}"
             ]
           },
           {
@@ -76,13 +84,16 @@
             "leading_diamond": "<transparent,#212224></>",
             "trailing_diamond": "",
             "template": " {{ .FormattedMs }} ",
-            "foreground": "#22da6e",
+            "foreground": "@OMP_TIME_COLOR@",
             "background": "#212224",
             "type": "executiontime",
-            "style": "diamond",
-            "foreground_templates": [
-              "{{ if gt .Code 0 }}#22da6e{{ end }}"
-            ]
+            "style": "diamond"
+#>> The foreground_templates that used to sit here held one entry, `{{ if gt .Code
+#>> 0 }}` returning the very same hex as the base above, so it could never paint
+#>> anything the base was not already painting. A failed command is reported by
+#>> the chevron on the line below (@OMP_CHEVRON_ERR@), which is the one place that
+#>> answer belongs -- the duration of a command is not more interesting for having
+#>> failed.
           }
         ]
       },
@@ -378,7 +389,7 @@
             "leading_diamond": "",
             "trailing_diamond": "",
             "template": " \ue235  {{ if .Error }}{{ .Error }}{{ else }}{{ if .Venv }}{{ .Venv }} {{ end }}{{ .Full }}{{ end }} ",
-            "foreground": "#55b606",
+            "foreground": "@OMP_PY_COLOR@",
             "background": "#212224",
             "type": "python",
             "style": "diamond"

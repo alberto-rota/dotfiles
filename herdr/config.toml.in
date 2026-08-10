@@ -1,4 +1,4 @@
-#>> TEMPLATE -- rendered by install.sh with @PRIMARY@ / @PRIMARY_DIM@ substituted.
+#>> TEMPLATE -- rendered by install.sh with @SECONDARY@ / @PRIMARY_DIM@ substituted.
 #>> Edit THIS file, not the rendered config. #>> lines are stripped.
 
 #>> [keys] comes BEFORE the [[keys.command]] blocks on purpose: those implicitly
@@ -58,9 +58,13 @@ description = "zsh"
 [ui.toast]
 delivery = "herdr"
 
+#>> `accent` is herdr's ONE accent token: the active tab label, the focused
+#>> pane/window borders and every navigation highlight all draw from it --
+#>> there is no tab-only colour. It is the SECONDARY so the tab label reads in
+#>> the secondary accent; the borders and highlights necessarily follow.
 [ui]
 show_agent_labels_on_pane_borders = true
-accent = "@PRIMARY@"
+accent = "@SECONDARY@"
 
 # The sidebar keeps herdr's default rows. The only thing themed is `surface_dim`,
 # which is the one token herdr routes BOTH the sidebar rail/borders AND the

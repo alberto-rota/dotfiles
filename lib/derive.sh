@@ -17,6 +17,8 @@
 # Sets:
 #   PRIMARY_DIM MACHINE_LOWER USER_NAME
 #   OMP_ICON_COLOR OMP_ICON_COLOR_JOB OMP_TEXT_COLOR OMP_CHEVRON_FG OMP_CHEVRON_ERR
+#   OMP_PATH_COLOR OMP_TIME_COLOR OMP_PY_COLOR
+#   OMP_GIT_CLEAN OMP_GIT_BEHIND OMP_GIT_AHEAD OMP_GIT_DIVERGED OMP_GIT_DIRTY
 #   CLAUDE_MODEL_RGB CLAUDE_EFFORT_RGB CLAUDE_USAGE_RGB CLAUDE_WEEK_RGB CLAUDE_CTX_RGB
 #   TMUX_STATUS_LEFT TMUX_STATUS_RIGHT HSL_STATUS_LEFT HSL_STATUS_RIGHT
 
@@ -31,7 +33,7 @@
 # the primary is used as a *background* with black text on it (the tmux and
 # herdr bars, the Claude Code bubbles), so anything dark would be unreadable
 # there. Every entry below clears that bar, with the near-whites (dracula/snow,
-# nord/snow) as the deliberate low-saturation option -- claude_ramp() passes
+# nord/snow) as the deliberate low-saturation option -- accent_ramps() passes
 # saturation through untouched, so those give grey pills rather than invented
 # colour.
 #
@@ -135,23 +137,56 @@ accent_hex() {
   esac
 }
 
-# Five colours ramped from the primary to the secondary, for the Claude Code
-# status line's five bubbles (model, effort, 5h, 7d, context). Interpolated in
-# HSL along the SHORTER hue arc, so green->orange travels through yellow rather
-# than through the grey midpoint a straight RGB blend would give.
+# Everything ramped between the two accents, in one awk pass. Three lines out,
+# each "<kind> <value> <value> ...":
 #
-# Lightness is floored at 0.50 on the way out: the bubbles carry black text, so
-# a dark accent has to be lifted or the label stops being readable (black on
-# L=0.25 is ~2.5:1). Nothing is capped from above -- lighter only helps here --
-# and saturation is passed through untouched, so picking one of the near-white
-# swatches (dracula/snow, nord/snow) gives grey pills rather than invented colour.
-claude_ramp() {
+#   claude  five stops, as "r;g;b" -- the Claude Code status line's bubbles
+#                                     (model, effort, 5h, 7d, context)
+#   omp     four stops, as hex     -- the oh-my-posh segments that report
+#                                     something rather than carrying a language's
+#                                     brand colour, in the order they are read
+#                                     across the line: path, git, execution
+#                                     time, python
+#   git     five shades, as hex    -- that git stop, per branch state
+#
+# All interpolated in HSL along the SHORTER hue arc, so green->orange travels
+# through yellow rather than through the grey midpoint a straight RGB blend
+# would give.
+#
+# Lightness is floored on the way out, and by a DIFFERENT amount for each ramp,
+# because the two lines use these colours for opposite jobs. The Claude bubbles
+# carry black text, so a dark accent has to be lifted or the label stops being
+# readable (black on L=0.25 is ~2.5:1) -- hence 0.50. Every oh-my-posh segment
+# is a foreground on the theme's #212224 panel, where the floor is only about
+# the colour itself staying visible against a near-black, so it can sit lower.
+# Nothing is capped from above -- lighter only helps in both places -- and
+# saturation is passed through untouched, so picking one of the near-white
+# swatches (dracula/snow, nord/snow) gives grey pills and a grey prompt rather
+# than invented colour.
+#
+# The git shades are the one thing here that is NOT a position on the accent
+# ramp. They take the hue and saturation of the git stop and walk only
+# LIGHTNESS, 0.45 -> 0.73 in five even steps, ordered by how much the tree wants
+# doing about it: clean, behind, ahead, diverged, dirty. So the segment stays
+# the one colour the rest of the prompt has agreed on and simply gets brighter
+# the more there is to deal with -- quiet when there is nothing to do, loud when
+# there is. Spending the whole primary->secondary ramp on those five states
+# instead would read beautifully with two contrasting accents and then collapse
+# into five near-identical colours the moment somebody picks two neighbours out
+# of one palette row, at which point the segment stops reporting the state at
+# all. Lightness is the one axis that survives every pair, including a primary
+# and a secondary that are the same colour.
+#
+# One awk invocation and not three: the HSL conversions below are thirty lines
+# of it, and derive() is re-run on every keystroke in the setup UI.
+accent_ramps() {
   local p="${PRIMARY#\#}" s="${SECONDARY#\#}"
   # Hex is decoded by hand rather than with strtonum(), which is a gawk
   # extension: macOS's /usr/bin/awk is the one true awk and would abort with
-  # "calling undefined function strtonum" -- taking the whole Claude Code status
-  # line's colour ramp with it. index() into a digit string is POSIX awk.
-  awk -v p="$p" -v s="$s" -v n=5 '
+  # "calling undefined function strtonum" -- taking the Claude Code status
+  # line's colour ramp and half the prompt's with it. index() into a digit
+  # string is POSIX awk.
+  awk -v p="$p" -v s="$s" '
     function hex(x, i,   d, v) {
       v = 0
       for (d = 0; d < 2; d++)
@@ -175,6 +210,10 @@ claude_ramp() {
       if (t < 2/3) return pp + (q - pp) * (2/3 - t) * 6
       return pp
     }
+    function tohex(hh, ss, ll,   c) {                   # HSL -> "#rrggbb"
+      split(torgb(hh, ss, ll), c, ";")
+      return sprintf("#%02x%02x%02x", c[1], c[2], c[3])
+    }
     function tohsl(x, arr,   r, g, b, M, m, d, h, sat, l) {
       r = hex(x, 1); g = hex(x, 3); b = hex(x, 5)
       M = mx(r, g, b); m = mn(r, g, b); d = M - m; l = (M + m) / 2
@@ -187,19 +226,47 @@ claude_ramp() {
       }
       arr[0] = h; arr[1] = sat; arr[2] = l
     }
+    # Position t (0 = primary, 1 = secondary) along the ramp, into h/sat/l.
+    function stop(t, floor) {
+      h = a[0] + t * dh; if (h < 0) h += 1; if (h > 1) h -= 1
+      sat = a[1] + t * (b[1] - a[1])
+      l   = a[2] + t * (b[2] - a[2])
+      if (l < floor) l = floor
+    }
     BEGIN {
       tohsl(p, a); tohsl(s, b)
       dh = b[0] - a[0]
       if (dh >  0.5) dh -= 1                     # shorter way round the wheel
       if (dh < -0.5) dh += 1
-      for (i = 0; i < n; i++) {
-        t = (n == 1) ? 0 : i / (n - 1)
-        h = a[0] + t * dh; if (h < 0) h += 1; if (h > 1) h -= 1
-        sat = a[1] + t * (b[1] - a[1])
-        l   = a[2] + t * (b[2] - a[2])
-        if (l < 0.50) l = 0.50
-        printf "%s%s", torgb(h, sat, l), (i < n - 1 ? " " : "\n")
+
+      line = "claude"
+      for (i = 0; i < 5; i++) { stop(i / 4, 0.50); line = line " " torgb(h, sat, l) }
+      print line
+
+      # Four stops, left to right across the prompt line. The second one is the
+      # git segment: its hue and saturation are kept back to seed the shades
+      # below, so the branch states and the rest of the prompt cannot drift
+      # apart -- they are literally the same colour at different lightnesses.
+      line = "omp"
+      for (i = 0; i < 4; i++) {
+        stop(i / 3, 0.45)
+        if (i == 1) { gh = h; gs = sat; gl = l }
+        line = line " " tohex(h, sat, l)
       }
+      print line
+
+      # clean, behind, ahead, diverged, dirty -- least to most to deal with,
+      # over a lightness band centred on the lightness of the git stop. Pinning
+      # the centre into [0.56, 0.78] is what keeps the band both readable on the
+      # #212224 panel at the bottom and short of white at the top, whatever was
+      # picked; a band at FIXED lightness would have done the first two jobs and
+      # then turned the near-white swatches (dracula/snow, nord/snow) khaki,
+      # since dragging a hue-60 near-white down to L=0.45 is exactly the
+      # invented colour the rest of this file goes out of its way not to make.
+      gc = gl; if (gc < 0.56) gc = 0.56; if (gc > 0.78) gc = 0.78
+      line = "git"
+      for (i = 0; i < 5; i++) line = line " " tohex(gh, gs, gc - 0.14 + i * 0.07)
+      print line
     }'
 }
 
@@ -256,12 +323,29 @@ derive() {
   OMP_CHEVRON_FG="$(accent_hex "$OMP_CHEVRON_OK")"
   OMP_CHEVRON_ERR="$(accent_hex "$OMP_CHEVRON_ERROR")"
 
-  # --- Claude Code status line ----------------------------------------------------
-  # Its five bubbles used to be a fixed palette of their own; they are now the
-  # primary -> secondary ramp, so that bar belongs to the same two colours as
-  # everything else. As "r;g;b", which is the form the script's bubble() wants.
-  read -r CLAUDE_MODEL_RGB CLAUDE_EFFORT_RGB CLAUDE_USAGE_RGB CLAUDE_WEEK_RGB CLAUDE_CTX_RGB \
-    <<<"$(claude_ramp)"
+  # --- the accent ramps -----------------------------------------------------------
+  # One awk pass, three ramps out (see accent_ramps() above). The Claude bar's
+  # five bubbles and the four reporting segments of the prompt all used to be
+  # fixed palettes of their own; they are now positions between the two accents,
+  # so every line on the screen belongs to the same two colours.
+  #
+  # The loop reads the three lines rather than calling three functions, which is
+  # what makes it one fork. `while read ... done <<<` runs in this shell, not a
+  # subshell, so the assignments below survive it.
+  local ramp_kind ramp_rest
+  while read -r ramp_kind ramp_rest; do
+    case "$ramp_kind" in
+      # As "r;g;b", which is the form the Claude script's bubble() wants.
+      claude) read -r CLAUDE_MODEL_RGB CLAUDE_EFFORT_RGB CLAUDE_USAGE_RGB \
+                      CLAUDE_WEEK_RGB CLAUDE_CTX_RGB <<<"$ramp_rest" ;;
+      # The git stop is consumed inside awk (it seeds the shades on the next
+      # line), so it goes into a throwaway here: nothing in the template wants
+      # the un-shaded value, since even a clean tree is a state.
+      omp)    read -r OMP_PATH_COLOR _ OMP_TIME_COLOR OMP_PY_COLOR <<<"$ramp_rest" ;;
+      git)    read -r OMP_GIT_CLEAN OMP_GIT_BEHIND OMP_GIT_AHEAD \
+                      OMP_GIT_DIVERGED OMP_GIT_DIRTY <<<"$ramp_rest" ;;
+    esac
+  done <<<"$(accent_ramps)"
 
   # --- status line assembly -------------------------------------------------------
   # tmux's status bar and hsl's (bin/hsl, the herdr wrapper) are meant to look
@@ -337,6 +421,8 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   printf 'PALETTE_COLUMNS=%s\n' "$PALETTE_COLUMNS"
   for v in PRIMARY SECONDARY MACHINE PRIMARY_DIM MACHINE_LOWER USER_NAME NEUTRAL_FG \
            OMP_ICON_COLOR OMP_ICON_COLOR_JOB OMP_TEXT_COLOR OMP_CHEVRON_FG OMP_CHEVRON_ERR \
+           OMP_PATH_COLOR OMP_TIME_COLOR OMP_PY_COLOR \
+           OMP_GIT_CLEAN OMP_GIT_BEHIND OMP_GIT_AHEAD OMP_GIT_DIVERGED OMP_GIT_DIRTY \
            CLAUDE_MODEL_RGB CLAUDE_EFFORT_RGB CLAUDE_USAGE_RGB CLAUDE_WEEK_RGB CLAUDE_CTX_RGB \
            TMUX_STATUS_LEFT TMUX_STATUS_RIGHT HSL_STATUS_LEFT HSL_STATUS_RIGHT; do
     printf '%s=%s\n' "$v" "${!v}"

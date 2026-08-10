@@ -160,15 +160,24 @@ runtime=$(mktemp -d "${TMPDIR:-/tmp}/hsl.XXXXXX") || {
     note 'cannot create a runtime directory'
     exit 1
 }
-# The socket must be unique per invocation; the session name must not be, and
-# must not contain a dot, or `-t` parses it as session.window.pane.
-socket="hsl-$(basename "$runtime")"
+# The socket goes INSIDE the runtime directory, addressed with -S, rather than
+# being a -L name in tmux's shared socket directory. Two reasons, and the second
+# is why the plugin's README has an "emergency teardown" section telling you to
+# go and look for leftovers by hand:
+#
+#   - it is unique per invocation for free, with no name to collide;
+#   - it is removed with everything else by cleanup(). A -L socket lives in
+#     $TMUX_TMPDIR/tmux-$UID/, which nothing here owns, and a server that is
+#     killed rather than asked to exit does not always unlink its own socket --
+#     so every launch left a dead socket file behind, for ever, on a machine
+#     where this runs at every single login.
+socket=$runtime/tmux.sock
 launcher=$runtime/launch.sh
 exit_file=$runtime/exit-status
 stderr_file=$runtime/stderr
 
 cleanup() {
-    "$TMUX_BIN" -L "$socket" kill-server >/dev/null 2>&1 || true
+    "$TMUX_BIN" -S "$socket" kill-server >/dev/null 2>&1 || true
     rm -rf "$runtime"
 }
 
@@ -261,11 +270,11 @@ fi
 (
     unset TMUX
     if [ -n "$size" ]; then
-        exec "$TMUX_BIN" -L "$socket" -f "$HSL_CONF" new-session -d \
+        exec "$TMUX_BIN" -S "$socket" -f "$HSL_CONF" new-session -d \
             -s "$SESSION_NAME" -n "$WINDOW_NAME" -x "$cols" -y "$rows" \
             "exec $(shell_quote "$launcher")"
     else
-        exec "$TMUX_BIN" -L "$socket" -f "$HSL_CONF" new-session -d \
+        exec "$TMUX_BIN" -S "$socket" -f "$HSL_CONF" new-session -d \
             -s "$SESSION_NAME" -n "$WINDOW_NAME" \
             "exec $(shell_quote "$launcher")"
     fi
@@ -286,11 +295,11 @@ fi
 # where the launcher runs `wait-for || exit 1` -- so any hiccup in the handshake
 # kills herdr outright instead of costing one swallowed escape sequence in the
 # first few milliseconds of a session. Cheap failure beats rare catastrophic one.
-"$TMUX_BIN" -L "$socket" set-option -g allow-passthrough on >/dev/null 2>&1 || true
+"$TMUX_BIN" -S "$socket" set-option -g allow-passthrough on >/dev/null 2>&1 || true
 
 if (
     unset TMUX
-    exec "$TMUX_BIN" -L "$socket" attach-session -t "$SESSION_NAME"
+    exec "$TMUX_BIN" -S "$socket" attach-session -t "$SESSION_NAME"
 ); then
     tmux_status=0
 else

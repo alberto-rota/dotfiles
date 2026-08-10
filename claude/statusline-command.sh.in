@@ -6,7 +6,7 @@
 #>> The bubbles used to be a fixed palette of their own (blue/purple/pink/
 #>> orange/teal). They are now the primary -> secondary ramp lib/derive.sh
 #>> computes, so this bar belongs to the same two accent colours as the prompt
-#>> and the status bars -- see claude_ramp() there for how five colours are made
+#>> and the status bars -- see accent_ramps() there for how five colours are made
 #>> out of two (HSL, shorter hue arc, lightness floored so the black bubble text
 #>> stays readable).
 # Claude Code status line — oh-my-posh "bubbles" look: separate rounded
