@@ -1389,6 +1389,8 @@ render() {
         -e "s|@OMP_GIT_AHEAD@|$OMP_GIT_AHEAD|g" \
         -e "s|@OMP_GIT_DIVERGED@|$OMP_GIT_DIVERGED|g" \
         -e "s|@OMP_GIT_DIRTY@|$OMP_GIT_DIRTY|g" \
+        -e "s|@CLAUDE_PRIMARY_SHIMMER@|$CLAUDE_PRIMARY_SHIMMER|g" \
+        -e "s|@CLAUDE_SECONDARY_SHIMMER@|$CLAUDE_SECONDARY_SHIMMER|g" \
         -e "s|@CLAUDE_MODEL_RGB@|$CLAUDE_MODEL_RGB|g" \
         -e "s|@CLAUDE_EFFORT_RGB@|$CLAUDE_EFFORT_RGB|g" \
         -e "s|@CLAUDE_USAGE_RGB@|$CLAUDE_USAGE_RGB|g" \
@@ -1677,6 +1679,29 @@ if [ -d "$GENERATED" ]; then
     [ "$keep" -eq 1 ] || { rm -f "$f"; echo "Pruned stale $rel"; }
   done < <(find "$GENERATED" -type f -print0)
   find "$GENERATED" -mindepth 1 -type d -empty -delete 2>/dev/null || true
+fi
+
+# ...and then the links that pointed at what the prune just deleted. A theme this
+# repo used to render and no longer does leaves a symlink behind in the one
+# directory Claude Code scans to build its theme list, and nothing else would ever
+# revisit it: the manifest is rewritten every run and only reset.sh reads it, so a
+# path that simply stops being produced is invisible to both. It has to come AFTER
+# the prune above rather than beside the theme linking, which is the version of
+# this that did not work -- at link time the target still exists, so there is
+# nothing detectably stale, and the prune then goes and creates the dangle.
+#
+# Keyed on the link being BROKEN and pointing into our own .generated/, not on any
+# particular name: monokai.json and yellow-border.json are what it clears today
+# (both retired in favour of accent.json), and the next rename needs no edit here.
+# A real file of theirs, or a symlink of their own that resolves, is never touched.
+if [ -d "$HOME/.claude/themes" ]; then
+  for f in "$HOME"/.claude/themes/*.json; do
+    [ -L "$f" ] || continue
+    [ -e "$f" ] && continue
+    case "$(readlink "$f")" in
+      "$GENERATED"/*) rm -f "$f"; echo "Pruned stale theme link $(tilde "$f")" ;;
+    esac
+  done
 fi
 
 # --- manifest -------------------------------------------------------------

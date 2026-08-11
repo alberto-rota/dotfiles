@@ -408,6 +408,13 @@ def placeholders(derived: dict[str, str], answers: Answers) -> dict[str, str]:
         "CLAUDE_USAGE_RGB": derived["CLAUDE_USAGE_RGB"],
         "CLAUDE_WEEK_RGB": derived["CLAUDE_WEEK_RGB"],
         "CLAUDE_CTX_RGB": derived["CLAUDE_CTX_RGB"],
+        # The pulse partners for Claude Code's own UI theme. No pane previews
+        # them -- its colours belong to a program the wizard is not drawing -- but
+        # placeholders() is what keeps render_template() able to render every
+        # template the installer does, so a missing key here would raise on the
+        # next person who does preview one.
+        "CLAUDE_PRIMARY_SHIMMER": derived["CLAUDE_PRIMARY_SHIMMER"],
+        "CLAUDE_SECONDARY_SHIMMER": derived["CLAUDE_SECONDARY_SHIMMER"],
         "OMP_TEXT_COLOR": derived["OMP_TEXT_COLOR"],
         "OMP_CHEVRON_FG": derived["OMP_CHEVRON_FG"],
         "OMP_CHEVRON_ERR": derived["OMP_CHEVRON_ERR"],

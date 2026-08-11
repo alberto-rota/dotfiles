@@ -179,6 +179,28 @@ accent_hex() {
 #
 # One awk invocation and not three: the HSL conversions below are thirty lines
 # of it, and derive() is re-run on every keystroke in the setup UI.
+#
+# NOTE FOR ANYONE ADDING A RAMP: the awk program is wrapped in single quotes, so
+# **no comment inside it may contain an apostrophe** -- `Claude Code's` in one
+# closes the program, and bash then tries to parse `for (i = 0; ...)` itself and
+# dies with `syntax error near unexpected token '('` pointing at a line that is
+# perfectly good awk. Every existing comment in there is apostrophe-free for this
+# reason; prose that wants one belongs out here, like the paragraph below.
+#
+# The fourth ramp, "shimmer", is the pair of colours Claude Code's own UI theme
+# pulses to while it is working. Its theme pairs most accented keys with a lighter
+# "*Shimmer" partner -- permission/permissionShimmer, autoAccept/autoAcceptShimmer,
+# promptBorder/promptBorderShimmer -- and overriding a base without its partner
+# leaves the pulse flashing Claude Code's own blue over our accent, so both
+# accents get one. See claude/themes/accent.json.in.
+#
+# +0.12 lightness is what Claude Code's own pairs use: #b1b9f9 -> #cfd7ff,
+# #af87ff -> #d0b4ff and #888888 -> #a6a6a6 are all within a hundredth of it.
+# Above 0.80 it goes the other way instead, because a shimmer is only doing its
+# job if it DIFFERS from the base, and lightening one of the near-white swatches
+# (dracula/snow, nord/snow) clips against white and pulses to a standstill. Down
+# is as good as up there, and it is the same reasoning as the git band being
+# centred on its stop rather than fixed: keep the contrast, whatever was picked.
 accent_ramps() {
   local p="${PRIMARY#\#}" s="${SECONDARY#\#}"
   # Hex is decoded by hand rather than with strtonum(), which is a gawk
@@ -267,6 +289,15 @@ accent_ramps() {
       line = "git"
       for (i = 0; i < 5; i++) line = line " " tohex(gh, gs, gc - 0.14 + i * 0.07)
       print line
+
+      # The two shimmer partners. Reasoning is above the awk block, since it
+      # cannot be written in here: an apostrophe would close the program.
+      line = "shimmer"
+      for (i = 0; i < 2; i++) {
+        stop(i, 0)                                 # 0 = primary, 1 = secondary
+        line = line " " tohex(h, sat, l > 0.80 ? l - 0.12 : l + 0.12)
+      }
+      print line
     }'
 }
 
@@ -344,6 +375,9 @@ derive() {
       omp)    read -r OMP_PATH_COLOR _ OMP_TIME_COLOR OMP_PY_COLOR <<<"$ramp_rest" ;;
       git)    read -r OMP_GIT_CLEAN OMP_GIT_BEHIND OMP_GIT_AHEAD \
                       OMP_GIT_DIVERGED OMP_GIT_DIRTY <<<"$ramp_rest" ;;
+      # The pulse partners for Claude Code's own UI theme -- see the "shimmer"
+      # block in accent_ramps() and claude/themes/accent.json.in.
+      shimmer) read -r CLAUDE_PRIMARY_SHIMMER CLAUDE_SECONDARY_SHIMMER <<<"$ramp_rest" ;;
     esac
   done <<<"$(accent_ramps)"
 
@@ -424,6 +458,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
            OMP_PATH_COLOR OMP_TIME_COLOR OMP_PY_COLOR \
            OMP_GIT_CLEAN OMP_GIT_BEHIND OMP_GIT_AHEAD OMP_GIT_DIVERGED OMP_GIT_DIRTY \
            CLAUDE_MODEL_RGB CLAUDE_EFFORT_RGB CLAUDE_USAGE_RGB CLAUDE_WEEK_RGB CLAUDE_CTX_RGB \
+           CLAUDE_PRIMARY_SHIMMER CLAUDE_SECONDARY_SHIMMER \
            TMUX_STATUS_LEFT TMUX_STATUS_RIGHT HSL_STATUS_LEFT HSL_STATUS_RIGHT; do
     printf '%s=%s\n' "$v" "${!v}"
   done

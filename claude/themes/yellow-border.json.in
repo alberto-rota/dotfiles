@@ -1,8 +1,0 @@
-{
-  "name": "@MACHINE_LOWER@ theme",
-  "base": "dark",
-  "overrides": {
-    "promptBorder": "@PRIMARY@",
-    "clawd_body": "@PRIMARY@"
-  }
-}
