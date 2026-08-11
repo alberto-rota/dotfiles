@@ -230,6 +230,8 @@ TOOL_META=(
   "claude|Claude Code|editor"
   "gdown|gdown|python"
   "groundcontrol|ground-control-tui|python"
+  "sekrt|sekrt (secret manager)|python"
+  "dasshboard|dasshboard (Ghostty home)|python"
   "nvitop|nvitop (GPU monitor)|gpu"
   "tailscale|Tailscale (needs 'up')|net"
   "herdr|herdr|herdr"
@@ -430,9 +432,31 @@ micromamba_bin() {
 }
 have_micromamba() { micromamba_bin >/dev/null 2>&1; }
 
+# Is a plugin registered with herdr? The listing is one "- <id> (<name>) enabled
+# [<source>]" line per plugin, plus an indented "config:" line under each.
+#
+# The output is CAPTURED FIRST and matched second, rather than being piped
+# straight into `grep -q`, and that is not a style preference -- the pipe was a
+# bug that reinstalled the file-viewer plugin on every single run. `grep -q`
+# stops reading the moment it matches, which for a plugin near the top of the
+# list happens while herdr is still writing; herdr is Rust, so the closed stdout
+# is a broken-pipe panic and it exits 101. Under `pipefail` -- which is how
+# install.sh sources this file, though NOT how `--plan` executes it -- that 101
+# becomes the pipeline's status even though grep matched perfectly, so this
+# returned false about a plugin that was right there in the output. Hence also
+# the one symptom worth recognising: `--plan` said "already installed" and the
+# run then installed it anyway, the exact plan-vs-run split this file exists to
+# prevent, and it could only ever be reproduced by SOURCING the file the way
+# install.sh does.
+#
+# It is order-dependent on top of that, which is what made it look flaky: the
+# same pipe against `grep -q herdr-statusline` matched four lines further down
+# and usually got there after herdr had finished writing.
 herdr_has_plugin() {
   have herdr || return 1
-  herdr plugin list 2>/dev/null | grep -q "^- $1 "
+  local list
+  list="$(herdr plugin list 2>/dev/null)" || return 1
+  printf '%s\n' "$list" | grep -q "^- $1 "
 }
 
 tool_present() {
@@ -470,6 +494,8 @@ tool_present() {
     claude)        have claude || [ -x "$HOME/.local/bin/claude" ] ;;
     gdown)         have gdown ;;
     groundcontrol) have groundcontrol || have gc ;;
+    sekrt)         have sekrt ;;
+    dasshboard)    have dasshboard ;;
     nvitop)        have nvitop ;;
     herdr)         have herdr ;;
     herdr_file_viewer) herdr_has_plugin herdr-file-viewer ;;
@@ -952,8 +978,16 @@ tool_route() {
     # so there is no --no-modify-path to pass: nothing here can land in the
     # tracked ~/.profile symlink.
     claude)   echo "script|claude.ai/install.sh -> ~/.local/bin" ;;
-    gdown|groundcontrol|nvitop)
+    gdown|groundcontrol|sekrt|nvitop)
               if [ "$AVAIL_UV" = 1 ]; then echo "uv|uv tool install $(_pypi_name "$1")"
+              else echo "|needs uv"; fi ;;
+    # macOS only, and not by preference: it drives Ghostty's own tab API, and
+    # the wheel upstream publishes is a macOS-only binary one -- so on Linux
+    # there is nothing to install rather than something we are declining to.
+    # `na` is the honest answer for that, the way `blocked` would not be.
+    dasshboard)
+              if ! is_mac; then echo "na|macOS only"
+              elif [ "$AVAIL_UV" = 1 ]; then echo "uv|uv tool install dasshboard"
               else echo "|needs uv"; fi ;;
     # There is no herdr_statusline row here any more. It used to be the one
     # entry with no route at all on macOS (`na|linux only`, from the plugin's
@@ -1542,6 +1576,8 @@ install_claude() {
 
 install_gdown()         { uv_install gdown; }
 install_groundcontrol() { uv_install ground-control-tui; }
+install_sekrt()         { uv_install sekrt; }
+install_dasshboard()    { uv_install dasshboard; }
 install_nvitop()        { uv_install nvitop; }
 
 _path_prepend() {

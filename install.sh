@@ -249,6 +249,22 @@ OMP_ICON=""
 OMP_TEXT=""
 OMP_CHEVRON_OK=""
 OMP_CHEVRON_ERROR=""
+
+# The panel every pill of the prompt is drawn on: the machine name, the path,
+# git, the execution time, python, and the corner glyph that hangs off the end
+# of the line. Unlike the five answers above this one IS defaulted here, because
+# there is no older answer to migrate from and no derivation to it -- it is used
+# verbatim.
+#
+# #212224 is the Monokai Pro background this theme was built around, and it is
+# the one colour here that is deliberately NOT one of the accents: it sits
+# *behind* them, so accenting it would leave the accent-coloured text on top of
+# itself. What it is for is matching the terminal -- a pill panel a shade off the
+# terminal's own background is the difference between a prompt that looks built
+# in and one that looks pasted on. The accent ramps assume it stays dark (see
+# accent_ramps() in lib/derive.sh, which lifts foregrounds *away* from black);
+# a light panel will fight them, which the live preview shows immediately.
+OMP_PILL_BG="#212224"
 # NEUTRAL_FG, the palette, valid_hex/valid_machine, darken() and the defaults
 # and migration for the five answers above all come from lib/derive.sh.
 
@@ -278,6 +294,7 @@ Usage: ./install.sh [options]
       --primary HEX     Set the primary colour non-interactively (e.g. --primary '#78dce8').
       --secondary HEX   Set the secondary colour non-interactively.
       --machine NAME    Set the machine name non-interactively.
+      --pill-bg HEX     Set the oh-my-posh pill background (default '#212224').
   -y, --non-interactive Never prompt; use saved answers, or the defaults if none.
       --skip-uv         Don't install/update uv (offline machines, CI).
       --shell WHICH     Which shells to wire up: auto (default), bash, zsh, both.
@@ -372,6 +389,7 @@ while [ $# -gt 0 ]; do
     --primary)   PRIMARY_ARG="${2:?--primary needs a value}"; shift ;;
     --secondary) SECONDARY_ARG="${2:?--secondary needs a value}"; shift ;;
     --machine)   MACHINE_ARG="${2:?--machine needs a value}"; shift ;;
+    --pill-bg)   PILL_BG_ARG="${2:?--pill-bg needs a value}"; shift ;;
     -h|--help)   usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -549,8 +567,12 @@ fi
 PRIMARY="${PRIMARY_ARG:-$PRIMARY}"
 SECONDARY="${SECONDARY_ARG:-$SECONDARY}"
 MACHINE="${MACHINE_ARG:-$MACHINE}"
+# Falls back to the default rather than to empty: a theme.env from before this
+# answer existed simply has no line for it, and an empty background would render
+# an .omp.json whose pills have no panel at all.
+OMP_PILL_BG="${PILL_BG_ARG:-${OMP_PILL_BG:-#212224}}"
 
-for v in PRIMARY SECONDARY; do
+for v in PRIMARY SECONDARY OMP_PILL_BG; do
   valid_hex "${!v}" || { echo "Invalid $v colour '${!v}' -- want #rrggbb." >&2; exit 2; }
 done
 valid_machine "$MACHINE" || {
@@ -704,6 +726,26 @@ ask_color() {
   done
 }
 
+# A plain hex prompt, deliberately NOT ask_color's two-step scheme picker: every
+# swatch in the palette is an accent, chosen to be light enough to take black
+# text on top of it (see PALETTE_HEX in lib/derive.sh), and offering forty-eight
+# of those as a panel to draw accent-coloured text ON would be offering
+# forty-eight wrong answers. So the prompt names the two that actually come up --
+# the Monokai default, and pure black for a terminal whose own background is
+# black and where any panel at all reads as a seam.
+ask_pill_bg() {
+  local answer
+  while true; do
+    section "Prompt panel" "the pills behind path, git, time"
+    printf '  hex, 000000 for none [%s]: ' "$OMP_PILL_BG"
+    read -r -u "$TTY_FD" answer || answer=""
+    [ -z "$answer" ] && return
+    [[ "$answer" =~ ^[0-9a-fA-F]{6}$ ]] && answer="#$answer"
+    if valid_hex "$answer"; then OMP_PILL_BG="$answer"; return; fi
+    printf '  \033[31mNot a #rrggbb value.\033[0m\n'
+  done
+}
+
 ask_machine() {
   local answer
   while true; do
@@ -848,6 +890,7 @@ omp_live_preview() {
       -e "s|@OMP_TEXT_COLOR@|$OMP_TEXT_COLOR|g" \
       -e "s|@OMP_CHEVRON_FG@|$OMP_CHEVRON_FG|g" \
       -e "s|@OMP_CHEVRON_ERR@|$OMP_CHEVRON_ERR|g" \
+      -e "s|@OMP_PILL_BG@|$OMP_PILL_BG|g" \
       -e "s|@OMP_PATH_COLOR@|$OMP_PATH_COLOR|g" \
       -e "s|@OMP_TIME_COLOR@|$OMP_TIME_COLOR|g" \
       -e "s|@OMP_PY_COLOR@|$OMP_PY_COLOR|g" \
@@ -900,7 +943,7 @@ bar_seg() {
 }
 
 show_preview() {
-  local p s icon_c text_c chev_c cols rule
+  local p s icon_c text_c chev_c pill_c cols rule
   # Everything the preview needs is a derived value, so derive them exactly the
   # way the install will -- no second, drifting copy of the colour logic here.
   derive
@@ -915,6 +958,10 @@ show_preview() {
   s="$(hex_rgb "$SECONDARY")"
   icon_c="$(hex_rgb "$OMP_ICON_COLOR")"
   text_c="$(hex_rgb "$OMP_TEXT_COLOR")"
+  # The panel, no longer the literal 33;34;36 these three printfs used to carry:
+  # it is an answer now, and a hand-drawn preview of the wrong colour is worse
+  # than no preview.
+  pill_c="$(hex_rgb "$OMP_PILL_BG")"
   chev_c="$(hex_rgb "$OMP_CHEVRON_FG")"
   section "Preview"
   # pane border
@@ -925,11 +972,11 @@ show_preview() {
     omp_live_preview
   else
     # oh-my-posh not installed yet -- hand-drawn approximation of just the
-    # machine segment and the bottom chevron line, on the theme's #212224 panel.
-    printf '    \033[48;2;33;34;36m\033[38;2;%sm  \033[38;2;%sm%s \033[0m' \
-      "$icon_c" "$text_c" "$MACHINE_LOWER"
-    printf '\033[38;2;33;34;36m\033[0m\n'
-    printf '    \033[38;2;33;34;36m╰─\033[38;2;%sm \033[0m\n' "$chev_c"
+    # machine segment and the bottom chevron line, on the chosen pill panel.
+    printf '    \033[48;2;%sm\033[38;2;%sm  \033[38;2;%sm%s \033[0m' \
+      "$pill_c" "$icon_c" "$text_c" "$MACHINE_LOWER"
+    printf '\033[38;2;%sm\033[0m\n' "$pill_c"
+    printf '    \033[38;2;%sm╰─\033[38;2;%sm \033[0m\n' "$pill_c" "$chev_c"
   fi
 
   # tmux / hsl: host, gpu, slurm, clock -- only the enabled pills,
@@ -978,6 +1025,7 @@ text_wizard() {
   while true; do
     ask_color PRIMARY   "Primary"
     ask_color SECONDARY "Secondary"
+    ask_pill_bg
     ask_machine
     ask_components
     [ "$INSTALL_TOOLS" = 1 ] && ask_tools
@@ -1012,7 +1060,7 @@ run_tui() {
   # lib/derive.sh does when the UI shells out to it for its live preview.
   export DOTFILES PRIMARY SECONDARY MACHINE USER_NAME NEUTRAL_FG
   export SHOW_HOST SHOW_GPU SHOW_TEMP SHOW_SLURM SHOW_DATETIME
-  export OMP_ICON_MODE OMP_ICON OMP_TEXT OMP_CHEVRON_OK OMP_CHEVRON_ERROR
+  export OMP_ICON_MODE OMP_ICON OMP_TEXT OMP_CHEVRON_OK OMP_CHEVRON_ERROR OMP_PILL_BG
   export HSL_LOGIN
   # Every TOOL_<ID>, so the UI's checkboxes open on this machine's saved answers
   # and its install-plan pane resolves against them.
@@ -1057,7 +1105,7 @@ if [ "$INTERACTIVE" -eq 1 ]; then
     [ "$NO_TUI" -eq 1 ] || echo "NOTE: the Textual UI is unavailable here; using the text wizard."
     text_wizard
   fi
-elif [ -n "${PRIMARY_ARG:-}${SECONDARY_ARG:-}${MACHINE_ARG:-}" ]; then
+elif [ -n "${PRIMARY_ARG:-}${SECONDARY_ARG:-}${MACHINE_ARG:-}${PILL_BG_ARG:-}" ]; then
   echo "Using the values given on the command line."
 elif [ "$HAD_ANSWERS" -eq 1 ]; then
   echo "Using saved theme from $ANSWERS (--reconfigure to change)."
@@ -1125,6 +1173,7 @@ OMP_ICON=$OMP_ICON
 OMP_TEXT=$OMP_TEXT
 OMP_CHEVRON_OK=$OMP_CHEVRON_OK
 OMP_CHEVRON_ERROR=$OMP_CHEVRON_ERROR
+OMP_PILL_BG="$OMP_PILL_BG"
 HSL_LOGIN=$HSL_LOGIN
 EOF
 # One TOOL_<ID>=0|1 per catalogue entry, appended rather than spelled out in the
@@ -1331,6 +1380,7 @@ render() {
         -e "s|@OMP_TEXT_COLOR@|$OMP_TEXT_COLOR|g" \
         -e "s|@OMP_CHEVRON_FG@|$OMP_CHEVRON_FG|g" \
         -e "s|@OMP_CHEVRON_ERR@|$OMP_CHEVRON_ERR|g" \
+        -e "s|@OMP_PILL_BG@|$OMP_PILL_BG|g" \
         -e "s|@OMP_PATH_COLOR@|$OMP_PATH_COLOR|g" \
         -e "s|@OMP_TIME_COLOR@|$OMP_TIME_COLOR|g" \
         -e "s|@OMP_PY_COLOR@|$OMP_PY_COLOR|g" \
@@ -1659,8 +1709,12 @@ echo "    tools phase installs all three, and without them the viewer falls back
 # inert now (bin/hsl has taken the ~/.local/bin/hsl name over, and its old
 # launcher is sitting beside it as hsl.bak), but it is several hundred MB of
 # Rust checkout and build output, so it is worth saying it can go.
-if command -v herdr >/dev/null 2>&1 &&
-   herdr plugin list 2>/dev/null | grep -q herdr-statusline; then
+#
+# herdr_has_plugin() from lib/tools.sh rather than a second copy of the same
+# `herdr plugin list | grep` here: piping that listing straight into `grep -q`
+# under this script's `pipefail` is unreliable in a way that took a while to
+# pin down -- see the comment on that function.
+if herdr_has_plugin herdr-statusline; then
   echo "  - NOTE: the old herdr-statusline plugin is still installed here. The status"
   echo "    line is bin/hsl now -- a shell script over a rendered tmux config, no Rust"
   echo "    and no plugin -- so the plugin is unused. To reclaim its checkout and build"

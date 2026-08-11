@@ -195,6 +195,13 @@ class Answers:
     omp_text: str = "primary"
     omp_chevron_ok: str = "primary"
     omp_chevron_error: str = "secondary"
+    # The panel every prompt pill is drawn on. Not one of the three accent
+    # choices above and not a palette swatch either: it sits *behind* them, so
+    # the palette (all light, all picked to take black text) holds no usable
+    # value for it. #212224 is the Monokai Pro background this theme was built
+    # around; the other answer people actually want is #000000, to match a
+    # terminal whose own background is black.
+    omp_pill_bg: str = "#212224"
     # Start hsl (bin/hsl: herdr plus the status line, on every platform now)
     # from ~/.bashrc at login. Off by
     # default: it is the one answer that changes what opening a terminal does,
@@ -230,6 +237,7 @@ class Answers:
         d = cls()
         primary = env.get("PRIMARY", d.primary)
         secondary = env.get("SECONDARY", d.secondary)
+        pill_bg = env.get("OMP_PILL_BG", d.omp_pill_bg)
         machine = env.get("MACHINE", "") or _hostname()
         # Answers saved before per-component colours existed still describe a
         # look; lib/derive.sh migrates them, and so does this, so opening the UI
@@ -262,6 +270,7 @@ class Answers:
             omp_text=choice("OMP_TEXT", legacy_text),
             omp_chevron_ok=choice("OMP_CHEVRON_OK", "primary" if chevron_on else "neutral"),
             omp_chevron_error=choice("OMP_CHEVRON_ERROR", "secondary" if chevron_on else "neutral"),
+            omp_pill_bg=pill_bg if HEX_RE.match(pill_bg) else d.omp_pill_bg,
         )
 
     def as_env(self) -> dict[str, str]:
@@ -285,6 +294,7 @@ class Answers:
             "OMP_TEXT": self.omp_text,
             "OMP_CHEVRON_OK": self.omp_chevron_ok,
             "OMP_CHEVRON_ERROR": self.omp_chevron_error,
+            "OMP_PILL_BG": self.omp_pill_bg,
             # Last, so the fragment install.sh sources reads in the same order
             # theme.env is written in: the look first, then the tool answers.
             **tools,
@@ -292,7 +302,7 @@ class Answers:
 
     def as_shell(self) -> str:
         env = self.as_env()
-        quoted = {"PRIMARY", "SECONDARY", "MACHINE"}  # validated, so "..." is safe
+        quoted = {"PRIMARY", "SECONDARY", "MACHINE", "OMP_PILL_BG"}  # validated
         lines = [
             "# Written by dotfiles/tui/configure.py, sourced by install.sh.",
             *(f'{k}="{v}"' if k in quoted else f"{k}={v}" for k, v in env.items()),
@@ -409,6 +419,10 @@ def placeholders(derived: dict[str, str], answers: Answers) -> dict[str, str]:
         "OMP_GIT_AHEAD": derived["OMP_GIT_AHEAD"],
         "OMP_GIT_DIVERGED": derived["OMP_GIT_DIVERGED"],
         "OMP_GIT_DIRTY": derived["OMP_GIT_DIRTY"],
+        # An answer used verbatim rather than a derived value, so it comes from
+        # as_env() like SHOW_TEMP does -- there is nothing for derive.sh to do to
+        # it beyond the validation from_env() already applied.
+        "OMP_PILL_BG": env["OMP_PILL_BG"],
         "TMUX_STATUS_LEFT": derived["TMUX_STATUS_LEFT"],
         "TMUX_STATUS_RIGHT": derived["TMUX_STATUS_RIGHT"],
         "HSL_STATUS_LEFT": derived["HSL_STATUS_LEFT"],
@@ -698,7 +712,7 @@ class Previewer:
         """The real prompt: oh-my-posh rendering a real copy of the template."""
         mapping = placeholders(derived, answers)
         if not shutil.which("oh-my-posh"):
-            return self._posh_fallback(derived, width)
+            return self._posh_fallback(derived, answers, width)
         config = self._tmpdir / "omp.json"
         config.write_text(
             render_template("oh-my-posh/albe-monokai2.omp.json.in", mapping), encoding="utf-8"
@@ -716,7 +730,7 @@ class Previewer:
         except (OSError, subprocess.SubprocessError) as exc:
             return Text(f"oh-my-posh failed: {exc}", style="red")
         if proc.returncode != 0:
-            return self._posh_fallback(derived, width)
+            return self._posh_fallback(derived, answers, width)
         # OSC (the console title) would otherwise leak into the pane as text.
         clean = re.sub(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)", "", proc.stdout)
         # Clipped here, not just by the caller: oh-my-posh pads its right-aligned
@@ -724,10 +738,10 @@ class Previewer:
         # line wider than the pane.
         return fit_block(Text.from_ansi(clean.rstrip("\n")), width)
 
-    def _posh_fallback(self, derived: dict[str, str], width: int) -> Text:
+    def _posh_fallback(self, derived: dict[str, str], answers: Answers, width: int) -> Text:
         """oh-my-posh is not on PATH yet (a machine being set up for the first
         time): draw the machine segment and the chevron line by hand."""
-        panel = "#212224"
+        panel = answers.omp_pill_bg
         out = Text()
         out.append(" ", Style(color=derived["OMP_ICON_COLOR"], bgcolor=panel))
         out.append(f" {derived['MACHINE_LOWER']} ", Style(color=derived["OMP_TEXT_COLOR"], bgcolor=panel))
@@ -1390,7 +1404,14 @@ class SetupApp(App):
                                   "installed. NO_HSL=1 skips it.", style="italic"),
                              classes="hint")
 
-                yield Static("oh-my-posh accents", classes="section")
+                yield Static("oh-my-posh prompt", classes="section")
+                # The panel, not an accent -- hence a hex box here rather than a
+                # fourth ACCENT_CHOICES row, and here rather than up in Colours,
+                # where it would read as a third accent and pick up the palette
+                # grid's P/S markers.
+                with Horizontal(classes="field"):
+                    yield Label("panel")
+                    yield Input(value=self.answers.omp_pill_bg, id="pill-hex", max_length=7)
                 yield ChoiceRow("omp_icon_mode", "glyph mode", ICON_MODES,
                                 self.answers.omp_icon_mode, id="omp_icon_mode")
                 yield ChoiceRow("omp_icon", "  glyph colour", ACCENT_CHOICES,
@@ -1465,6 +1486,24 @@ class SetupApp(App):
     @on(Input.Changed, "#secondary-hex")
     def _secondary_typed(self, event: Input.Changed) -> None:
         self._hex_typed(event, "secondary")
+
+    @on(Input.Changed, "#pill-hex")
+    def _pill_typed(self, event: Input.Changed) -> None:
+        """The panel. Deliberately not routed through _hex_typed(): that one also
+        moves the palette grid onto the accent being typed, and this is not one of
+        the two accents the grid can point at."""
+        if self._syncing:
+            return
+        value = event.value.strip()
+        if BARE_HEX_RE.match(value):
+            value = f"#{value}"
+        if HEX_RE.match(value):
+            event.input.remove_class("-invalid")
+            self.answers = replace(self.answers, omp_pill_bg=value.lower())
+            self._clear_error()
+            self.schedule_preview()
+        else:
+            event.input.add_class("-invalid")
 
     def _hex_typed(self, event: Input.Changed, field: str) -> None:
         if self._syncing:
@@ -1706,6 +1745,7 @@ class SetupApp(App):
         for selector, ok, message in (
             ("#primary-hex", HEX_RE.match(self.answers.primary), "Primary colour is not a #rrggbb value."),
             ("#secondary-hex", HEX_RE.match(self.answers.secondary), "Secondary colour is not a #rrggbb value."),
+            ("#pill-hex", HEX_RE.match(self.answers.omp_pill_bg), "Prompt panel is not a #rrggbb value."),
             ("#machine", MACHINE_RE.match(self.answers.machine), "Machine name: 1-24 of [A-Za-z0-9._-]."),
         ):
             if not ok:

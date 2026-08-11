@@ -19,7 +19,7 @@
             "trailing_diamond": "",
             "template": "{{ if .Env.SLURM_JOB_NAME }}<@OMP_ICON_COLOR_JOB@></> {{else}}<@OMP_ICON_COLOR@></> {{end}}<@OMP_TEXT_COLOR@>@MACHINE_LOWER@ </>",
             "foreground": "#000000",
-            "background": "#212224",
+            "background": "@OMP_PILL_BG@",
             "type": "text",
             "style": "diamond"
           },
@@ -37,11 +37,11 @@
               },
               "style": "full"
             },
-            "leading_diamond": "<transparent,#212224></>",
+            "leading_diamond": "<transparent,@OMP_PILL_BG@></>",
             "trailing_diamond": "",
             "template": "{{ .Path }} ",
             "foreground": "@OMP_PATH_COLOR@",
-            "background": "#212224",
+            "background": "@OMP_PILL_BG@",
             "type": "path",
             "style": "diamond"
           },
@@ -57,7 +57,7 @@
             "template": " {{ url .UpstreamIcon .UpstreamURL }} {{ .HEAD }}{{if .BranchStatus }} {{ .BranchStatus }}{{ end }}{{ if .Working.Changed }} \uf044 {{ .Working.String }}{{ end }}{{ if and (.Working.Changed) (.Staging.Changed) }} |{{ end }}{{ if .Staging.Changed }} \uf046 {{ .Staging.String }}{{ end }}{{ if gt .StashCount 0 }} \ueb4b {{ .StashCount }}{{ end }} ",
             "foreground": "@OMP_GIT_CLEAN@",
             "powerline_symbol": "",
-            "background": "#212224",
+            "background": "@OMP_PILL_BG@",
             "type": "git",
             "style": "powerline",
 #>> All five git colours are the SAME hue and saturation at five lightnesses (see
@@ -81,11 +81,11 @@
               "style": "roundrock",
               "threshold": 0
             },
-            "leading_diamond": "<transparent,#212224></>",
+            "leading_diamond": "<transparent,@OMP_PILL_BG@></>",
             "trailing_diamond": "",
             "template": " {{ .FormattedMs }} ",
             "foreground": "@OMP_TIME_COLOR@",
-            "background": "#212224",
+            "background": "@OMP_PILL_BG@",
             "type": "executiontime",
             "style": "diamond"
 #>> The foreground_templates that used to sit here held one entry, `{{ if gt .Code
@@ -390,7 +390,7 @@
             "trailing_diamond": "",
             "template": " \ue235  {{ if .Error }}{{ .Error }}{{ else }}{{ if .Venv }}{{ .Venv }} {{ end }}{{ .Full }}{{ end }} ",
             "foreground": "@OMP_PY_COLOR@",
-            "background": "#212224",
+            "background": "@OMP_PILL_BG@",
             "type": "python",
             "style": "diamond"
           },
@@ -455,7 +455,7 @@
               "cache_duration": "none"
             },
             "template": "\u2570\u2500",
-            "foreground": "#212224",
+            "foreground": "@OMP_PILL_BG@",
             "type": "text",
             "style": "plain"
           },
