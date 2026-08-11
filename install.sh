@@ -1724,6 +1724,41 @@ echo "  - Tools are installed by whichever route this machine can use (apt with 
 echo "    rustup/cargo, uv, release tarballs, git or Homebrew without). './install.sh"
 echo "    --reconfigure' lets you deselect any of them; 'bash lib/tools.sh --plan' shows"
 echo "    what a run would do without doing it."
+# Locally modified tracked files, named on the way out of every run.
+#
+# This is the counterpart to `dotfiles update` refusing to install stale code,
+# and it exists because the failure it prevents is one of ACCUMULATION. A file
+# edited by hand on one machine sits there invisibly -- the install keeps
+# working, everything renders, nothing complains -- until the day those edits
+# collide with an incoming commit, at which point every future `dotfiles update`
+# on that machine aborts its pull. The CLI now says so loudly when it happens,
+# but by then the checkout has been quietly frozen for however long, which on
+# the machine this was found on meant a prompt, two status bars and even the
+# setup UI's live preview all running code from four commits back.
+#
+# So: say it at the point the edit is still fresh in somebody's memory, on every
+# single run, whether or not there is anything to pull today. Only tracked
+# modifications count -- untracked files are normal here (.generated/ and
+# theme.env aside, people leave scratch files in a checkout) and only collide in
+# the narrow renamed-template case the CLI diagnoses on its own.
+#
+# `|| true` on both: no git, or a tarball checkout with no .git, is not an error,
+# and this script runs under `set -euo pipefail`. git's own exit status is
+# ignored for the same reason -- a diff against a repo it cannot read should
+# print nothing here, not take the tail of an install down.
+if [ -d "$DOTFILES/.git" ] && command -v git >/dev/null 2>&1; then
+  DIRTY_TRACKED="$(git -C "$DOTFILES" diff --name-only HEAD 2>/dev/null || true)"
+  if [ -n "$DIRTY_TRACKED" ]; then
+    echo "  - NOTE: the checkout has local edits to tracked files:"
+    printf '      %s\n' $DIRTY_TRACKED
+    echo "    They are installed and working, so nothing is broken today. But if an"
+    echo "    incoming commit ever touches one of them, 'dotfiles update' will refuse"
+    echo "    to fast-forward and stop rather than install stale code -- so either"
+    echo "    commit them (they are then on every machine) or drop them:"
+    echo "      git -C $(tilde "$DOTFILES") diff            # what they actually are"
+    echo "      git -C $(tilde "$DOTFILES") checkout -- .   # throw them all away"
+  fi
+fi
 if [ "$HSL_LOGIN" = 1 ]; then
   if command -v hsl >/dev/null 2>&1; then
     echo "  - hsl (herdr + the status line) will start at every interactive login."

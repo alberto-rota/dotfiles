@@ -78,6 +78,9 @@ Usage: $SELF <command> [options]
   reconfigure [opts]  install.sh --reconfigure: change the colours, machine name,
                       status-line components and tool selection.
   update [opts]       Fast-forward the checkout, then install (no prompting).
+                      Stops with the reason if the checkout cannot be refreshed,
+                      rather than quietly re-rendering the old code;
+                      --keep-going installs from it as it stands anyway.
   tools [opts]        install.sh --tools-only: install the software, touch no config.
   plan                What a tools run would do on this machine, without doing it.
 
@@ -109,8 +112,133 @@ cmd_tools()       { need_checkout; exec bash "$DOTFILES/install.sh" --tools-only
 cmd_plan()        { need_checkout; exec bash "$DOTFILES/lib/tools.sh" --plan; }
 cmd_path()        { need_checkout; printf '%s\n' "$DOTFILES"; }
 
+# Why did the fast-forward refuse? git's own message is accurate and generic,
+# and the case that actually happens here -- a tracked file edited on this
+# machine that the incoming commits also touch -- is the one it describes least
+# usefully, because the remedy is "these specific files" and git names them in a
+# wall of text that has already scrolled past by the time install.sh finishes.
+# So work it out and say it in two lines. Every branch ends in a command to run.
+update_diagnose() {
+  local branch up blocking colliding behind ahead
+
+  branch="$(git -C "$DOTFILES" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
+  if [ "$branch" = HEAD ]; then
+    echo "  Cause: the checkout is on a detached HEAD, so there is no branch to"
+    echo "         fast-forward. To get back on the branch:"
+    echo "           git -C $DOTFILES checkout main"
+    return 0
+  fi
+
+  # `|| true` on both: no upstream is a normal state, not an error, and this
+  # script runs under set -e.
+  up="$(git -C "$DOTFILES" rev-parse --abbrev-ref '@{u}' 2>/dev/null || true)"
+  if [ -z "$up" ]; then
+    echo "  Cause: branch '$branch' has no upstream, so there is nothing to pull."
+    echo "         To point it at the remote branch of the same name:"
+    echo "           git -C $DOTFILES branch --set-upstream-to=origin/$branch"
+    return 0
+  fi
+
+  # Can we see the remote at all? Checked before anything about the working
+  # tree, because no network and no credentials both present as a failed pull on
+  # a checkout that is otherwise in perfect shape -- and the answer there is
+  # "try later", not "go and edit your files".
+  if ! git -C "$DOTFILES" ls-remote --exit-code origin >/dev/null 2>&1; then
+    echo "  Cause: could not reach the remote -- no network, or no credentials"
+    echo "         for it on this machine. The checkout itself is fine; nothing"
+    echo "         here needs fixing, so try again when the remote is reachable."
+    return 0
+  fi
+
+  # Tracked files this machine has changed (staged or not -- hence `diff HEAD`
+  # rather than a bare `diff`) that the incoming commits ALSO change. That
+  # intersection is precisely what git refuses to overwrite: a local edit to a
+  # file the range does not touch does not block a fast-forward at all, so
+  # listing every modified file would send you after the wrong ones.
+  blocking="$(comm -12 \
+    <(git -C "$DOTFILES" diff --name-only HEAD 2>/dev/null | sort) \
+    <(git -C "$DOTFILES" diff --name-only "HEAD..$up" 2>/dev/null | sort) || true)"
+  if [ -n "$blocking" ]; then
+    echo "  Cause: these files are edited here AND changed by the incoming commits,"
+    echo "         so git will not overwrite them:"
+    printf '           %s\n' $blocking
+    echo ""
+    echo "         If the edits matter, keep them:"
+    echo "           git -C $DOTFILES stash push -m pre-update $blocking"
+    echo "         If they do not, throw them away:"
+    echo "           git -C $DOTFILES checkout -- $blocking"
+    echo "         Then re-run '$SELF update'. Worth a look at the diff first:"
+    echo "           git -C $DOTFILES diff -- $blocking"
+    return 0
+  fi
+
+  # Untracked files sitting where the incoming commits want to create one. This
+  # is the renamed-file case: a template that moved between directories arrives
+  # as a create, and a leftover copy at the destination stops the whole pull.
+  colliding="$(comm -12 \
+    <(git -C "$DOTFILES" ls-files --others --exclude-standard 2>/dev/null | sort) \
+    <(git -C "$DOTFILES" diff --name-only "HEAD..$up" 2>/dev/null | sort) || true)"
+  if [ -n "$colliding" ]; then
+    echo "  Cause: these untracked files are in the way of files the incoming"
+    echo "         commits create:"
+    printf '           %s\n' $colliding
+    echo ""
+    echo "         Move them aside (or delete them) and re-run '$SELF update':"
+    echo "           git -C $DOTFILES stash push -u -m pre-update $colliding"
+    return 0
+  fi
+
+  # Local commits: a fast-forward is impossible by definition, and this is the
+  # one cause whose remedy is a judgement call rather than a command, since
+  # those commits may be work that exists nowhere else.
+  ahead="$(git -C "$DOTFILES" rev-list --count "$up..$branch" 2>/dev/null || echo 0)"
+  behind="$(git -C "$DOTFILES" rev-list --count "$branch..$up" 2>/dev/null || echo 0)"
+  if [ "$ahead" -gt 0 ]; then
+    echo "  Cause: '$branch' has $ahead commit(s) that '$up' does not, so it cannot"
+    echo "         fast-forward ($behind commit(s) waiting on the other side)."
+    echo "         What those local commits are:"
+    echo "           git -C $DOTFILES log --oneline $up..$branch"
+    echo "         Then either replay them on top:"
+    echo "           git -C $DOTFILES pull --rebase"
+    echo "         or, if they are not worth keeping, discard them:"
+    echo "           git -C $DOTFILES reset --hard $up"
+    return 0
+  fi
+
+  # Nothing above matched, so git refused for a reason this function has never
+  # seen. Say that plainly instead of guessing, and hand over the two commands
+  # that will show it.
+  echo "  Cause: not one this CLI recognises -- the checkout looks clean and"
+  echo "         '$branch' is not ahead of '$up'. The full picture:"
+  echo "           git -C $DOTFILES status"
+  echo "           git -C $DOTFILES pull --ff-only"
+}
+
 # Refresh the checkout, then install from it with no prompting -- the two halves
 # of "get this machine onto the current dotfiles".
+#
+# A REFUSED REFRESH IS FATAL HERE, and that is the whole point of the shape
+# below. This used to print a NOTE and install anyway, which made the one
+# command whose entire job is "get the new code" report success while rendering
+# the OLD code. On a machine whose tracked claude/settings.json carried a
+# one-line local edit, `git pull --ff-only` aborted, the NOTE scrolled past in a
+# screenful of install output, and the prompt, both status bars and even the
+# setup UI's live preview all stayed quietly on the previous commit -- through
+# repeated updates, because every one of them failed in exactly the same
+# invisible way. The plan-vs-run split lib/tools.sh goes to such lengths to
+# avoid has an update-vs-updated twin, and this was it. So: update either
+# updates or says it did not, out loud, with the reason and the remedy.
+#
+# install.sh's own bootstrap deliberately does the opposite -- every failed
+# refresh there falls through to installing what is on disk -- and the two are
+# not in conflict. Its job is to get a machine set up AT ALL, where local edits
+# or no network are reasons to use what you have rather than to leave somebody
+# with nothing. Here there is already a working install to keep, so stopping
+# costs nothing and carrying on costs you the truth.
+#
+# --keep-going restores the old behaviour for the one case that wants it: an
+# offline machine where you are re-rendering after editing a template and know
+# perfectly well the checkout is stale.
 #
 # Only the git case is handled here on purpose. A checkout that came from the
 # tarball route (a machine with no git) is refreshed by install.sh's own
@@ -120,13 +248,37 @@ cmd_path()        { need_checkout; printf '%s\n' "$DOTFILES"; }
 # what is already there.
 cmd_update() {
   need_checkout
+  local keep=0 a
+  # bash 3.2: build the pass-through list in an array rather than reassigning $@
+  # with a shift dance, and expand it below in the ${a[@]+...} form that survives
+  # set -u when it is empty.
+  local args=()
+  for a in "$@"; do
+    case "$a" in
+      --keep-going) keep=1 ;;
+      *) args+=("$a") ;;
+    esac
+  done
+
   if [ -d "$DOTFILES/.git" ] && command -v git >/dev/null 2>&1; then
     echo "Fast-forwarding $DOTFILES ..."
-    git -C "$DOTFILES" pull --ff-only || {
+    if ! git -C "$DOTFILES" pull --ff-only; then
       echo ""
-      echo "NOTE: couldn't fast-forward (local edits, a diverged branch, or no"
-      echo "      network). Installing from the checkout as it stands."
-    }
+      echo "Could not fast-forward $DOTFILES."
+      update_diagnose
+      if [ "$keep" -eq 0 ]; then
+        echo ""
+        echo "  NOTHING WAS INSTALLED. The checkout is still on"
+        echo "  $(git -C "$DOTFILES" log --oneline -1 2>/dev/null || echo '?')"
+        echo "  and installing from it would have looked like an update without"
+        echo "  being one. Fix the above and re-run, or if that is what you want:"
+        echo "    $SELF update --keep-going   # re-render from the checkout as it is"
+        echo "    $SELF install               # the same, without trying to refresh"
+        exit 1
+      fi
+      echo ""
+      echo "Continuing anyway (--keep-going): installing from the checkout as it stands."
+    fi
   else
     echo "NOTE: $DOTFILES is not a git checkout, so there is nothing to pull."
     echo "      To refresh a tarball checkout in place:"
@@ -134,7 +286,7 @@ cmd_update() {
     echo "      Installing from the checkout as it stands."
   fi
   echo ""
-  exec bash "$DOTFILES/install.sh" -y "$@"
+  exec bash "$DOTFILES/install.sh" -y ${args[@]+"${args[@]}"}
 }
 
 # Every backup still on disk, read off the manifest -- the same file reset.sh
