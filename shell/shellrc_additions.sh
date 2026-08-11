@@ -172,12 +172,52 @@ if [ "$DOTFILES_INTERACTIVE" = 1 ]; then
     esac
   fi
 fi
+# eza takes over ls, identically in bash and zsh, by exactly one mechanism: a
+# function, with no alias of the same name left standing beside it. The three
+# oddities below are each load-bearing, and all of them come from one fact:
+#
+#   BOTH SHELLS EXPAND ALIASES WHEN A COMMAND IS *READ*, NOT WHEN IT RUNS.
+#
+# Debian and Ubuntu's stock ~/.bashrc carries `alias ls='ls --color=auto'`, and
+# this file is sourced from the tail of that very file -- so an `ls` alias is
+# normally in effect by the time the shell reads these lines. Written plainly as
+# `ls() { ...; }`, the parser sees `ls --color=auto ()` and dies with `syntax
+# error near unexpected token '('`. That is not cosmetic: a syntax error in a
+# sourced file abandons **everything after it**, so the PATH additions, the
+# prompt, zoxide, fzf and the login autostart below all silently stop happening
+# too -- a broken `ls` is the least of what you notice. zsh fails the same way and
+# only reports it better ("defining function based on alias `ls'").
+#
+# So:
+#
+# - the definition goes through `eval`, which is what keeps the text `ls()` out of
+#   the parse of this file entirely. It is parsed when eval runs instead, by which
+#   point the unalias on the line above has already executed;
+# - the unalias is INSIDE the `if`, which is only safe *because* of the eval. On
+#   its own it would be useless here: an `if ... fi` is read as a single compound
+#   command, so an unalias within it runs long after a bare `ls()` beside it was
+#   parsed. Hoisting it out of the block instead would work for the eza case and
+#   break the other one, below;
+# - and nothing at all happens when eza is absent. That is the case the obvious
+#   fix gets wrong: parsing is unconditional, so a bare `ls()` inside this block
+#   is a syntax error on a machine with the stock alias and no eza -- a plain
+#   Ubuntu box, or any machine where eza has not installed yet -- even though the
+#   branch is never taken. Unaliasing unconditionally to dodge that would throw
+#   away an `ls --color=auto` we did not put there and cannot faithfully restore
+#   (bash and zsh even print `alias ls` back in different formats). Leaving it
+#   untouched is both simpler and more honest.
+#
+# "$@" comes LAST so that what you type wins. The defaults used to be appended
+# after it (`eza "$@" -lh --tree ...`), which silently overrode every flag you
+# passed that conflicted with one of them: `ls -1` came out as -l, since eza
+# honours the last of two conflicting layout flags.
 if command -v eza >/dev/null 2>&1; then
-  ls() { eza "$@" -lh --tree --level=1 --git --icons; }
+  unalias ls 2>/dev/null
+  eval 'ls() { eza -lh --tree --level=1 --git --icons "$@"; }'
 fi
 # Debian and Ubuntu ship these two under different names, because the obvious
 # ones were already taken by unrelated packages. Aliased only when the real
-# name is missing, Fffso a machine that got them from cargo/brew (where they are
+# name is missing, so a machine that got them from cargo/brew (where they are
 # called bat and fd) is left alone -- and so the alias never shadows a newer
 # binary that install.sh put in ~/.local/bin or ~/.cargo/bin.
 command -v bat >/dev/null 2>&1 || { command -v batcat >/dev/null 2>&1 && alias bat="batcat"; }
