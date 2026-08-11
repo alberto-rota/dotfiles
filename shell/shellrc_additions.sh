@@ -207,13 +207,25 @@ fi
 #   (bash and zsh even print `alias ls` back in different formats). Leaving it
 #   untouched is both simpler and more honest.
 #
-# "$@" comes LAST so that what you type wins. The defaults used to be appended
-# after it (`eza "$@" -lh --tree ...`), which silently overrode every flag you
-# passed that conflicted with one of them: `ls -1` came out as -l, since eza
-# honours the last of two conflicting layout flags.
+# "$@" comes LAST so that what you type wins, which for the flags eza resolves
+# last-one-wins is a real difference rather than a stylistic one: `ls --level=3`
+# on the old spelling (`eza "$@" -lh --tree --level=1 ...`) was silently ignored,
+# because the default --level=1 was appended *after* it. Depth 3 of this checkout
+# is 56 lines against the default's 14, and you got 14. (Not every flag behaves
+# that way -- -1 loses to -l whatever the order -- but the ones that do only work
+# in this direction.)
+#
+# --icons=auto is spelled out rather than left bare, and only this order makes
+# that necessary: its value is OPTIONAL (`--icons [<WHEN>]`), so a bare --icons
+# sitting immediately before "$@" swallows the first thing after it and `ls .`
+# dies with `error: invalid value '.' for '--icons [<WHEN>]'`. =auto is also what
+# the bare flag already meant -- eza reads plain --icons as auto, NOT as always --
+# so icons stay on a terminal and out of a pipe exactly as before. Any other
+# default that grew an optional value would need the same care; -lh, --tree,
+# --level=1 and --git cannot, having either no value or a glued one.
 if command -v eza >/dev/null 2>&1; then
   unalias ls 2>/dev/null
-  eval 'ls() { eza -lh --tree --level=1 --git --icons "$@"; }'
+  eval 'ls() { eza -lh --tree --level=1 --git --icons=auto "$@"; }'
 fi
 # Debian and Ubuntu ship these two under different names, because the obvious
 # ones were already taken by unrelated packages. Aliased only when the real
