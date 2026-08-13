@@ -227,12 +227,34 @@ SHOW_TEMP=1
 SHOW_SLURM=1
 SHOW_DATETIME=1
 
-# Launch hsl (herdr + the status line) from the shell rc at login. OFF by default,
-# and deliberately so: it is the one answer here that changes what happens when
-# you open a terminal, and getting it wrong on a machine you reach only over ssh
-# is the difference between "wrong colours" and "cannot get a shell". Turn it on
-# per machine once you want it. shell/hsl-login.sh.in holds the guards.
-HSL_LOGIN=0
+# What the shell rc opens at login: "herdr" (through hsl, so it gets the status
+# line), "dasshboard" (the ssh/local home screen), or "none". OFF by default, and
+# deliberately so: it is the one answer here that changes what happens when you
+# open a terminal, and getting it wrong on a machine you reach only over ssh is
+# the difference between "wrong colours" and "cannot get a shell". Pick one per
+# machine once you want it. shell/login-start.sh.in holds the guards.
+#
+# Initialised EMPTY rather than to "none", because derive() has a predecessor to
+# migrate: this used to be the boolean HSL_LOGIN, and a theme.env written before
+# dasshboard existed says HSL_LOGIN=1 and means herdr. derive() only migrates
+# when the new answer is unset, so defaulting it here would silently answer
+# "none" for every already-set-up machine. Same reason the OMP_* per-component
+# colours are initialised empty below.
+LOGIN_START=""
+
+# Turn round the two accents Claude Code paints its own UI with -- the menus,
+# the mode indicators, the command blocks and the answer text. Off by default,
+# because "the two accents mean the same thing everywhere" is the sane starting
+# point. It exists because Claude Code is the one place the primary lands on a
+# lot of text you read all day -- permission prompts, the spinner, and every
+# inline `code` span in an answer, which shares the "permission" key -- while
+# the secondary only ever flags a mode. Which accent reads best there is not
+# always the one that reads best as a background.
+#
+# It does NOT reach any of the three status bars, Claude Code's own included:
+# those are read as a row and one of them running the other way would make them
+# disagree about which accent comes first. Nor the prompt.
+CLAUDE_SWAP=0
 
 # oh-my-posh accent placement: every accented part of the prompt names its own
 # colour -- primary, secondary or neutral (#d6deeb, the theme's own text colour,
@@ -461,11 +483,11 @@ else
   LOGIN_RC="$HOME/.zshrc"; SHELL_FOR_RC=zsh
 fi
 # Which shell to name in the "how do I get a plain login shell" escape hatch the
-# hsl notes print. Only the two this repo wires; anything else gets bash, which
-# is the one guaranteed to be there.
+# login-autostart notes print. Only the two this repo wires; anything else gets
+# bash, which is the one guaranteed to be there.
 case "$LOGIN_SHELL" in
-  zsh) HSL_ESCAPE_SHELL=zsh ;;
-  *)   HSL_ESCAPE_SHELL=bash ;;
+  zsh) LOGIN_ESCAPE_SHELL=zsh ;;
+  *)   LOGIN_ESCAPE_SHELL=bash ;;
 esac
 
 # --- uv --------------------------------------------------------------------
@@ -820,8 +842,13 @@ ask_components() {
   ask_bool SHOW_SLURM    "  Slurm job pill"
   ask_bool SHOW_DATETIME "  date / time pill"
 
-  section "Shell login"
-  ask_bool HSL_LOGIN "  start herdr at login"
+  section "Shell login" "what opening a terminal opens"
+  ask_choice LOGIN_START "  start at login" none herdr dasshboard
+
+  # Kept short for the same reason every prompt here is: these lines are laid
+  # out to fit ~38 columns, and ask_bool spends 10 of them on the y/N tail.
+  section "Claude Code" "menus, commands, answer text"
+  ask_bool CLAUDE_SWAP "  swap the accents in its UI"
 
   section "oh-my-posh accents" "machine segment + status chevrons"
   ask_choice OMP_ICON_MODE "  leading glyph" fixed slurm
@@ -1061,7 +1088,7 @@ run_tui() {
   export DOTFILES PRIMARY SECONDARY MACHINE USER_NAME NEUTRAL_FG
   export SHOW_HOST SHOW_GPU SHOW_TEMP SHOW_SLURM SHOW_DATETIME
   export OMP_ICON_MODE OMP_ICON OMP_TEXT OMP_CHEVRON_OK OMP_CHEVRON_ERROR OMP_PILL_BG
-  export HSL_LOGIN
+  export LOGIN_START CLAUDE_SWAP
   # Every TOOL_<ID>, so the UI's checkboxes open on this machine's saved answers
   # and its install-plan pane resolves against them.
   tools_export
@@ -1138,14 +1165,14 @@ case "$LOGIN_SHELL" in
      echo "            $(tilde "$LOGIN_RC") is still written, so '$SHELL_FOR_RC -l' has the lot."
      echo "            To switch for good:  chsh -s \$(command -v $SHELL_FOR_RC)" ;;
 esac
-if [ "$HSL_LOGIN" = 1 ]; then
+case "$LOGIN_START" in
   # hsl is this repo's own now (bin/hsl over a rendered tmux config), so it is
   # on every machine that gets the config -- macOS included, which was the whole
   # reason for replacing the Linux-only plugin.
-  echo "  login     hsl (herdr + status line) starts at every interactive login"
-else
-  echo "  login     plain shell (herdr autostart off)"
-fi
+  herdr)      echo "  login     hsl (herdr + status line) starts at every interactive login" ;;
+  dasshboard) echo "  login     a dasshboard home screen opens at every interactive login" ;;
+  *)          echo "  login     plain shell (no autostart)" ;;
+esac
 if [ "$INSTALL_TOOLS" = 1 ]; then
   TOOLS_ON=0
   for id in "${TOOL_IDS[@]}"; do tool_selected "$id" && TOOLS_ON=$((TOOLS_ON + 1)); done
@@ -1174,7 +1201,8 @@ OMP_TEXT=$OMP_TEXT
 OMP_CHEVRON_OK=$OMP_CHEVRON_OK
 OMP_CHEVRON_ERROR=$OMP_CHEVRON_ERROR
 OMP_PILL_BG="$OMP_PILL_BG"
-HSL_LOGIN=$HSL_LOGIN
+LOGIN_START=$LOGIN_START
+CLAUDE_SWAP=$CLAUDE_SWAP
 EOF
 # One TOOL_<ID>=0|1 per catalogue entry, appended rather than spelled out in the
 # heredoc above so adding a tool needs no edit here. A tool that is not in the
@@ -1258,11 +1286,18 @@ print_next_steps() {
   echo ""
   for line in "${steps[@]}"; do printf '    %s\n' "$line"; done
   echo ""
-  if [ "$HSL_LOGIN" = 1 ]; then
-    echo "  (that last line will start herdr, since hsl-at-login is on --"
-    echo "   'NO_HSL=1 source $LOGIN_RC' if you would rather it did not)"
-    echo ""
-  fi
+  case "$LOGIN_START" in
+    herdr)
+      echo "  (that last line will start herdr, since the login autostart is on --"
+      echo "   'NO_LOGIN_START=1 source $LOGIN_RC' if you would rather it did not)"
+      echo ""
+      ;;
+    dasshboard)
+      echo "  (that last line will open a dasshboard home screen, since the login"
+      echo "   autostart is on -- 'NO_LOGIN_START=1 source $LOGIN_RC' if not)"
+      echo ""
+      ;;
+  esac
 }
 
 # Before the rendering below, not after: `herdr plugin install` creates each
@@ -1374,7 +1409,7 @@ render() {
         -e "s|@MACHINE@|$MACHINE|g" \
         -e "s|@HERDR_CONFIG@|$HERDR_CONFIG|g" \
         -e "s|@SHOW_TEMP@|$SHOW_TEMP|g" \
-        -e "s|@HSL_LOGIN@|$HSL_LOGIN|g" \
+        -e "s|@LOGIN_START@|$LOGIN_START|g" \
         -e "s|@OMP_ICON_COLOR_JOB@|$OMP_ICON_COLOR_JOB|g" \
         -e "s|@OMP_ICON_COLOR@|$OMP_ICON_COLOR|g" \
         -e "s|@OMP_TEXT_COLOR@|$OMP_TEXT_COLOR|g" \
@@ -1391,6 +1426,14 @@ render() {
         -e "s|@OMP_GIT_DIRTY@|$OMP_GIT_DIRTY|g" \
         -e "s|@CLAUDE_PRIMARY_SHIMMER@|$CLAUDE_PRIMARY_SHIMMER|g" \
         -e "s|@CLAUDE_SECONDARY_SHIMMER@|$CLAUDE_SECONDARY_SHIMMER|g" \
+        -e "s|@CLAUDE_PRIMARY@|$CLAUDE_PRIMARY|g" \
+        -e "s|@CLAUDE_SECONDARY@|$CLAUDE_SECONDARY|g" \
+        -e "s|@CLAUDE_MSG_BG_HOVER@|$CLAUDE_MSG_BG_HOVER|g" \
+        -e "s|@CLAUDE_MSG_BG@|$CLAUDE_MSG_BG|g" \
+        -e "s|@CLAUDE_MEMORY_BG@|$CLAUDE_MEMORY_BG|g" \
+        -e "s|@CLAUDE_SELECTION_BG@|$CLAUDE_SELECTION_BG|g" \
+        -e "s|@CLAUDE_TRACK_BG@|$CLAUDE_TRACK_BG|g" \
+        -e "s|@CLAUDE_BASH_BG@|$CLAUDE_BASH_BG|g" \
         -e "s|@CLAUDE_MODEL_RGB@|$CLAUDE_MODEL_RGB|g" \
         -e "s|@CLAUDE_EFFORT_RGB@|$CLAUDE_EFFORT_RGB|g" \
         -e "s|@CLAUDE_USAGE_RGB@|$CLAUDE_USAGE_RGB|g" \
@@ -1557,11 +1600,24 @@ printf '%s\n' "$DOTFILES" > "$CHECKOUT_POINTER"
 
 # --- shell ---
 # Sourced by shellrc_additions.sh at the very end. Rendered rather than
-# symlinked straight out of the repo because it carries the answer (@HSL_LOGIN@)
-# -- with it baked in, an "off" answer is a file that returns immediately
-# instead of one that re-decides on every single shell start.
-render_script shell/hsl-login.sh.in shell/hsl-login.sh
-link "$GENERATED/shell/hsl-login.sh" "$XDG_CONFIG/dotfiles/hsl-login.sh"
+# symlinked straight out of the repo because it carries the answer
+# (@LOGIN_START@) -- with it baked in, a "none" answer is a file that returns
+# immediately instead of one that re-decides on every single shell start.
+render_script shell/login-start.sh.in shell/login-start.sh
+link "$GENERATED/shell/login-start.sh" "$XDG_CONFIG/dotfiles/login-start.sh"
+# This was hsl-login.sh until the answer grew a third value, and a machine set up
+# before the rename still has that symlink. It is not on the manifest any more
+# (that file is rewritten from MANAGED every run), so nothing else would ever
+# revisit it -- and once the stale render is pruned at the end of this run it
+# would be a dangling link in ~/.config/dotfiles for ever. Same reasoning as the
+# stale-theme-link sweep for ~/.claude/themes, and keyed the same way: only ever
+# a symlink of ours pointing into our own .generated/, never a real file.
+STALE_HSL_LOGIN="$XDG_CONFIG/dotfiles/hsl-login.sh"
+if [ -L "$STALE_HSL_LOGIN" ]; then
+  case "$(readlink "$STALE_HSL_LOGIN" 2>/dev/null || true)" in
+    "$GENERATED"/*) rm -f "$STALE_HSL_LOGIN" ;;
+  esac
+fi
 link "$DOTFILES/shell/bashrc_functions" "$HOME/.bashrc_functions"
 link "$DOTFILES/shell/profile"          "$HOME/.profile"
 
@@ -1784,25 +1840,78 @@ if [ -d "$DOTFILES/.git" ] && command -v git >/dev/null 2>&1; then
     echo "      git -C $(tilde "$DOTFILES") checkout -- .   # throw them all away"
   fi
 fi
-if [ "$HSL_LOGIN" = 1 ]; then
-  if command -v hsl >/dev/null 2>&1; then
-    echo "  - hsl (herdr + the status line) will start at every interactive login."
-    echo "    'NO_HSL=1 $HSL_ESCAPE_SHELL -l' gets you a plain shell; quitting herdr drops you"
-    echo "    into one too (it is run, not exec'd, so a login can't be lost to it)."
-  elif command -v herdr >/dev/null 2>&1; then
-    # bin/hsl is copied to ~/.local/bin by this script, so this branch now means
-    # that directory is not on PATH yet rather than that hsl does not exist. The
-    # autostart falls back to plain herdr rather than doing nothing -- see
-    # shell/hsl-login.sh.in.
-    echo "  - herdr will start at every interactive login. ('hsl' -- herdr plus the"
-    echo "    status line -- is not on PATH here yet, so it is plain herdr for now;"
-    echo "    the PATH line below fixes that.)"
-    echo "    'NO_HSL=1 $HSL_ESCAPE_SHELL -l' gets you a plain shell; quitting herdr drops you"
-    echo "    into one too (it is run, not exec'd, so a login can't be lost to it)."
-  else
-    echo "  - NOTE: the login autostart is on, but neither 'hsl' nor 'herdr' is on"
-    echo "    PATH. Until one of them is installed the autostart just no-ops, so"
-    echo "    your logins are unaffected either way."
-  fi
+case "$LOGIN_START" in
+  herdr)
+    if command -v hsl >/dev/null 2>&1; then
+      echo "  - hsl (herdr + the status line) will start at every interactive login."
+      echo "    'NO_LOGIN_START=1 $LOGIN_ESCAPE_SHELL -l' gets you a plain shell; quitting herdr"
+      echo "    drops you into one too (it is run, not exec'd, so a login can't be lost)."
+    elif command -v herdr >/dev/null 2>&1; then
+      # bin/hsl is copied to ~/.local/bin by this script, so this branch now means
+      # that directory is not on PATH yet rather than that hsl does not exist. The
+      # autostart falls back to plain herdr rather than doing nothing -- see
+      # shell/login-start.sh.in.
+      echo "  - herdr will start at every interactive login. ('hsl' -- herdr plus the"
+      echo "    status line -- is not on PATH here yet, so it is plain herdr for now;"
+      echo "    the PATH line below fixes that.)"
+      echo "    'NO_LOGIN_START=1 $LOGIN_ESCAPE_SHELL -l' gets you a plain shell; quitting herdr"
+      echo "    drops you into one too (it is run, not exec'd, so a login can't be lost)."
+    else
+      echo "  - NOTE: the login autostart is set to herdr, but neither 'hsl' nor 'herdr'"
+      echo "    is on PATH. Until one of them is installed the autostart just no-ops, so"
+      echo "    your logins are unaffected either way."
+    fi
+    ;;
+  dasshboard)
+    if command -v dasshboard >/dev/null 2>&1; then
+      echo "  - a dasshboard home screen will open at every interactive login."
+      echo "    'NO_LOGIN_START=1 $LOGIN_ESCAPE_SHELL -l' gets you a plain shell; quitting it (q)"
+      echo "    drops you into one too (it is run, not exec'd, so a login can't be lost)."
+    else
+      echo "  - NOTE: the login autostart is set to dasshboard, but 'dasshboard' is not"
+      echo "    on PATH. Until it is installed the autostart just no-ops, so your logins"
+      echo "    are unaffected either way. It is in the tools catalogue ('dasshboard')."
+    fi
+    ;;
+esac
+# dasshboard ships its own `--startup on`, which appends two blocks to the shell
+# rc and claims this same slot -- and it is the ONE thing here that can disagree
+# with the answer above without either side being broken, because it is somebody
+# deliberately having asked for it. So it is reported rather than removed: taking
+# a hook the user installed by hand back out is not this script's call.
+#
+# The two are made to coexist as far as they can. login-start.sh honours NO_HSL
+# (which dasshboard's part 1 sets) and DASSHBOARD_SKIP (which it exports itself
+# before drawing), so whichever runs first wins for that login instead of both
+# drawing. What it cannot fix is the disagreement itself: with the hook installed
+# and this answer set to herdr, dasshboard wins every login -- so say so.
+#
+# `|| true` because --startup is a read here and a machine mid-uninstall (or an
+# older dasshboard that has no such flag) must not take the tail of an install
+# down. Only its own report is trusted; nothing here parses the rc file.
+if command -v dasshboard >/dev/null 2>&1; then
+  DASSH_HOOK="$(dasshboard --startup 2>/dev/null || true)"
+  case "$DASSH_HOOK" in
+    *"startup: on"*)
+      if [ "$LOGIN_START" = dasshboard ]; then
+        echo "  - NOTE: dasshboard also has its OWN startup hook in your shell rc."
+        echo "    It is harmless -- the autostart above exports DASSHBOARD_SKIP=1"
+        echo "    before drawing, so that block no-ops -- but two mechanisms for"
+        echo "    one slot is a thing to trip over later:"
+        echo "      dasshboard --startup off   # leave it to the dotfiles"
+      else
+        echo "  - NOTE: dasshboard has its own startup hook in your shell rc, and"
+        echo "    it WINS over the answer above -- it runs first, and"
+        case "$LOGIN_START" in
+          herdr) echo "    sets NO_HSL=1, so herdr will not start." ;;
+          *)     echo "    a home screen opens even though this says none." ;;
+        esac
+        echo "    Either keep it (and set 'start at login' to dasshboard, so"
+        echo "    the two agree) or take it out:"
+        echo "      dotfiles reconfigure       # set the answer to dasshboard"
+        echo "      dasshboard --startup off   # or remove its hook"
+      fi
+      ;;
+  esac
 fi
 print_next_steps

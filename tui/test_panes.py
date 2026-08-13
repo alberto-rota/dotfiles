@@ -26,7 +26,11 @@ import configure as C  # noqa: E402
 
 SIZES = [(200, 50), (140, 44), (120, 40), (100, 34), (88, 30),
          (80, 24), (70, 24), (60, 20), (50, 20), (40, 16)]
-PANES = ("posh", "hsl-bar", "claude", "herdr", "plan")
+# configure.py's own list, not a second copy of it: this harness is the only
+# thing that catches wrapping *inside* a bordered container, and a pane it has
+# never heard of is a pane nothing checks. A hardcoded tuple here let the
+# "claude code" pane be added and pass ten sizes without being looked at once.
+PANES = C.PREVIEW_PANES
 fails = []
 
 

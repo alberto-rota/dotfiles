@@ -1,0 +1,115 @@
+#!/bin/bash
+#>> Rendered to .generated/shell/login-start.sh and linked at
+#>> ~/.config/dotfiles/login-start.sh, which shell/shellrc_additions.sh sources
+#>> as its very last act -- from ~/.bashrc and ~/.zshrc alike. @LOGIN_START@ is
+#>> the wizard's answer, baked in at render time, so "none" leaves a file that
+#>> returns on its second line rather than one that has to re-decide on every
+#>> shell.
+#>>
+#>> It used to be shell/hsl-login.sh.in, when the answer was the boolean
+#>> HSL_LOGIN and herdr was the only thing it could start. Renamed with the
+#>> answer: a file that can also draw a dasshboard home screen cannot be called
+#>> hsl-login. install.sh removes the old symlink on the way past -- see the
+#>> stale-link sweep beside the render call there.
+#>>
+#>> SOURCED, never executed: every exit path below must be `return`. An `exit`
+#>> here would close the login shell it is running in.
+# What opens when you open a terminal: herdr (through hsl, so it gets the status
+# line), a dasshboard home screen, or nothing at all.
+#
+# This is the only thing in these dotfiles that can lock you out of your own
+# machine, so it is deliberately paranoid. Every condition has to hold; it RUNS
+# rather than exec's, so quitting drops you into a normal shell instead of ending
+# the session; and each program's own documented escape hatch is honoured, which
+# is what to remember if it ever misbehaves:
+#
+#     NO_LOGIN_START=1 bash -l   # a plain login shell, whatever the answer is
+#     NO_HSL=1 bash -l           # ...specifically no herdr
+#     DASSHBOARD_SKIP=1 zsh -l   # ...specifically no home screen
+#
+# NO_HSL and DASSHBOARD_SKIP are not this file's inventions and are not
+# interchangeable: the first is the name these dotfiles have always documented
+# for the herdr autostart, and the second is dasshboard's own, set by the hook
+# its `--startup on` writes. Honouring each one for the program it belongs to is
+# what lets that hook and this file coexist on a machine that has both.
+LOGIN_START=@LOGIN_START@
+[ "$LOGIN_START" = none ] && return 0
+
+# The blanket escape hatch, first so it beats everything else.
+[ -n "${NO_LOGIN_START:-}" ] && return 0
+
+# Once per login. The shell rc gets re-sourced constantly (the `rebash` alias in
+# shellrc_additions.sh does exactly that), and each of those would otherwise
+# start another one on top of the last. Exported so subshells inherit the
+# "already handled" answer rather than each deciding again.
+[ -n "${DOTFILES_LOGIN_STARTED:-}" ] && return 0
+
+# Interactive shells only. This rules out `ssh host cmd`, scp/rsync (which break
+# outright if a login shell writes to stdout), cron and every script that happens
+# to source a shell rc.
+case $- in *i*) ;; *) return 0 ;; esac
+[ -n "${SSH_ORIGINAL_COMMAND:-}" ] && return 0
+
+# Already inside herdr. It sets all of these in every pane it spawns, and each
+# of those panes runs the shell rc -- so without this guard the first thing a new
+# herdr pane would do is start a second herdr (or a home screen) inside itself.
+[ -n "${HERDR_ENV:-}${HERDR_PANE_ID:-}${HERDR_SOCKET_PATH:-}${HERDR_WORKSPACE_ID:-}" ] && return 0
+
+# Inside tmux, or inside an AI coding agent's shell -- both run a shell
+# interactively, and a full-screen TUI is wrong in either.
+[ -n "${TMUX:-}" ] && return 0
+[ -n "${CLAUDECODE:-}${AI_AGENT:-}" ] && return 0
+
+# A real terminal on both ends, and one that can actually draw.
+[ -t 0 ] && [ -t 1 ] || return 0
+case "${TERM:-dumb}" in dumb|unknown|"") return 0 ;; esac
+
+# And there has to be something to run. Nothing below is fatal when it is not
+# there: a tool that has not been installed yet (or has just been uninstalled)
+# must cost you the autostart and nothing else, which is why every branch here
+# ends in a plain `return 0` rather than a message.
+#
+# herdr: hsl is herdr plus the status line, and it is this repo's own (bin/hsl,
+# plain-copied to ~/.local/bin like anything else in bin/), so it is on every
+# machine that got the config -- macOS included. It used to be the launcher
+# shipped by the herdr-statusline plugin, whose manifest is
+# platforms = ["linux"], which meant this whole answer did nothing whatsoever on
+# a Mac, silently. That is what bin/hsl fixed. The fallback to plain herdr stays
+# anyway, for the window where ~/.local/bin is not on PATH yet (a first install,
+# before the shell has been re-sourced): the answer is "start my workspace
+# manager", and the status line is a detail of how that workspace looks rather
+# than the thing being asked for.
+_login_cmd=""
+case "$LOGIN_START" in
+  herdr)
+    # dasshboard's own --startup hook sets NO_HSL=1 in the shells where it is
+    # about to draw a home screen, and it does that BEFORE this file is sourced.
+    # Honouring it is what keeps the two from both claiming this slot.
+    [ -n "${NO_HSL:-}" ] && return 0
+    for _login_try in hsl herdr; do
+      if command -v "$_login_try" >/dev/null 2>&1; then _login_cmd="$_login_try"; break; fi
+    done
+    ;;
+  dasshboard)
+    # dasshboard's own name for "not in this shell", so `DASSHBOARD_SKIP=1 zsh -l`
+    # works the same whether the home screen is started from here or from the
+    # hook its --startup writes.
+    [ -n "${DASSHBOARD_SKIP:-}" ] && return 0
+    if command -v dasshboard >/dev/null 2>&1; then _login_cmd=dasshboard; fi
+    ;;
+esac
+unset _login_try
+if [ -z "$_login_cmd" ]; then
+  unset _login_cmd
+  return 0
+fi
+
+# Exported, both of them, and for the same reason: a home screen tile (or a herdr
+# pane) execs a shell, that shell reads this same rc, and without an inherited
+# "already handled" it would draw a second one inside the first. DASSHBOARD_SKIP
+# is dasshboard's own spelling of it, so the hook its --startup writes -- which
+# may still be in this rc, further down -- no-ops for this login as well.
+export DOTFILES_LOGIN_STARTED=1
+[ "$LOGIN_START" = dasshboard ] && export DASSHBOARD_SKIP=1
+"$_login_cmd"
+unset _login_cmd

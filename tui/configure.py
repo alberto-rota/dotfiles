@@ -32,9 +32,16 @@ What makes the previews trustworthy rather than a drawing of what the config is
   * the prompt is `oh-my-posh print` on a rendered copy of the real template;
   * the Claude Code line is the rendered status line script itself, run against
     a sample statusLine payload;
-  * only the herdr pane is a drawing, because there is no way to make herdr
-    render one frame into a string. Its colours (accent, and the darkened
-    surface_dim behind the selected row) are the real derived values.
+  * three panes are drawings, and only because the program in question cannot be
+    made to render one frame into a string: herdr, dasshboard, and Claude Code's
+    own UI. Their colours are still real, read from whatever file actually sets
+    them -- herdr's accent and the darkened surface_dim behind its selected row,
+    for Claude Code every value that claude/themes/accent.json.in substitutes
+    (read under the same key), and for dasshboard the primary/accent pair out of
+    ITS config, since this repo deliberately does not set those. So a drawn pane
+    can be laid out wrongly, but it cannot show a colour the installed config
+    does not have -- and the dasshboard one, alone in the window, does not move
+    when an accent does, because nothing typed here reaches it.
 """
 
 from __future__ import annotations
@@ -112,6 +119,10 @@ CLAUDE_SAMPLE = {
 # glyph's mode may be. Both mirror lib/derive.sh, which resolves them to hex.
 ACCENT_CHOICES = ("primary", "secondary", "neutral")
 ICON_MODES = ("fixed", "slurm")
+# What opening a terminal opens. "none" first, because it is the default and the
+# one answer here that can cost somebody a shell on a machine they only reach
+# over ssh -- so cycling the row starts from the harmless end.
+LOGIN_STARTS = ("none", "herdr", "dasshboard")
 
 
 # ---------------------------------------------------------------------------
@@ -202,11 +213,19 @@ class Answers:
     # around; the other answer people actually want is #000000, to match a
     # terminal whose own background is black.
     omp_pill_bg: str = "#212224"
-    # Start hsl (bin/hsl: herdr plus the status line, on every platform now)
-    # from ~/.bashrc at login. Off by
-    # default: it is the one answer that changes what opening a terminal does,
-    # and shell/hsl-login.sh.in carries a wall of guards because of it.
-    hsl_login: bool = False
+    # What ~/.bashrc opens at login: "herdr" (through bin/hsl, so it gets the
+    # status line, on every platform now), "dasshboard" (the ssh/local home
+    # screen) or "none". "none" by default: it is the one answer that changes
+    # what opening a terminal does, and shell/login-start.sh.in carries a wall of
+    # guards because of it. Was the boolean HSL_LOGIN before dasshboard; from_env
+    # migrates that, the same way it migrates the legacy OMP_COLOR_* toggles.
+    login_start: str = "none"
+    # Turn Claude Code's two accents round, and only Claude Code's. Off by
+    # default; see the CLAUDE_SWAP block in install.sh for why it exists at all,
+    # and accent_ramps() in lib/derive.sh for what it reaches (the theme, the
+    # status line bubbles, the shimmers and the message tints -- never the
+    # prompt or either status bar).
+    claude_swap: bool = False
     # The tools, held as "everything in the catalogue" plus "the ones switched
     # off" rather than as one field per tool: the catalogue is lib/tools.sh's to
     # define, and a dataclass field per entry would mean editing this file every
@@ -245,6 +264,12 @@ class Answers:
         legacy_icon = "secondary" if flag("OMP_COLOR_ICON", True) else "neutral"
         legacy_text = "primary" if flag("OMP_COLOR_TEXT", True) else "neutral"
         chevron_on = flag("OMP_COLOR_CHEVRON", True)
+        # Same for the login autostart, which was the boolean HSL_LOGIN before
+        # dasshboard gave it a third value. lib/derive.sh migrates it too, and by
+        # the same rule (only when the new answer is genuinely unset), so opening
+        # the UI on an already-set-up machine shows what that machine does today
+        # rather than resetting it to "none".
+        legacy_login = "herdr" if flag("HSL_LOGIN", False) else "none"
         # Absent means on, matching tool_selected() in lib/tools.sh -- which is
         # what makes a tool added to the catalogue turn itself on for a machine
         # whose theme.env predates it.
@@ -264,7 +289,8 @@ class Answers:
             show_temp=flag("SHOW_TEMP", d.show_temp),
             show_slurm=flag("SHOW_SLURM", d.show_slurm),
             show_datetime=flag("SHOW_DATETIME", d.show_datetime),
-            hsl_login=flag("HSL_LOGIN", d.hsl_login),
+            login_start=choice("LOGIN_START", legacy_login, LOGIN_STARTS),
+            claude_swap=flag("CLAUDE_SWAP", d.claude_swap),
             omp_icon_mode=choice("OMP_ICON_MODE", d.omp_icon_mode, ICON_MODES),
             omp_icon=choice("OMP_ICON", legacy_icon),
             omp_text=choice("OMP_TEXT", legacy_text),
@@ -288,7 +314,8 @@ class Answers:
             "SHOW_TEMP": _b(temp),
             "SHOW_SLURM": _b(self.show_slurm),
             "SHOW_DATETIME": _b(self.show_datetime),
-            "HSL_LOGIN": _b(self.hsl_login),
+            "LOGIN_START": self.login_start,
+            "CLAUDE_SWAP": _b(self.claude_swap),
             "OMP_ICON_MODE": self.omp_icon_mode,
             "OMP_ICON": self.omp_icon,
             "OMP_TEXT": self.omp_text,
@@ -400,7 +427,7 @@ def placeholders(derived: dict[str, str], answers: Answers) -> dict[str, str]:
         "USER": derived["USER_NAME"],
         "HERDR_CONFIG": f"{xdg}/herdr",
         "SHOW_TEMP": env["SHOW_TEMP"],
-        "HSL_LOGIN": env["HSL_LOGIN"],
+        "LOGIN_START": env["LOGIN_START"],
         "OMP_ICON_COLOR": derived["OMP_ICON_COLOR"],
         "OMP_ICON_COLOR_JOB": derived["OMP_ICON_COLOR_JOB"],
         "CLAUDE_MODEL_RGB": derived["CLAUDE_MODEL_RGB"],
@@ -413,8 +440,16 @@ def placeholders(derived: dict[str, str], answers: Answers) -> dict[str, str]:
         # placeholders() is what keeps render_template() able to render every
         # template the installer does, so a missing key here would raise on the
         # next person who does preview one.
+        "CLAUDE_PRIMARY": derived["CLAUDE_PRIMARY"],
+        "CLAUDE_SECONDARY": derived["CLAUDE_SECONDARY"],
         "CLAUDE_PRIMARY_SHIMMER": derived["CLAUDE_PRIMARY_SHIMMER"],
         "CLAUDE_SECONDARY_SHIMMER": derived["CLAUDE_SECONDARY_SHIMMER"],
+        "CLAUDE_MSG_BG": derived["CLAUDE_MSG_BG"],
+        "CLAUDE_MSG_BG_HOVER": derived["CLAUDE_MSG_BG_HOVER"],
+        "CLAUDE_MEMORY_BG": derived["CLAUDE_MEMORY_BG"],
+        "CLAUDE_SELECTION_BG": derived["CLAUDE_SELECTION_BG"],
+        "CLAUDE_TRACK_BG": derived["CLAUDE_TRACK_BG"],
+        "CLAUDE_BASH_BG": derived["CLAUDE_BASH_BG"],
         "OMP_TEXT_COLOR": derived["OMP_TEXT_COLOR"],
         "OMP_CHEVRON_FG": derived["OMP_CHEVRON_FG"],
         "OMP_CHEVRON_ERR": derived["OMP_CHEVRON_ERR"],
@@ -613,6 +648,180 @@ def compose_bar(left: Text, right: Text, width: int, bg: str) -> Text:
 
 
 # ---------------------------------------------------------------------------
+# dasshboard's colours, which are dasshboard's own
+# ---------------------------------------------------------------------------
+# dasshboard derives its whole interface from a primary and an accent, the same
+# shape as this repo's two answers -- but those two live in ITS config, and this
+# repo deliberately does not set them: the file is one dasshboard writes itself
+# from its `s` settings panel, so owning it would mean overwriting a colour the
+# user set there on every install run.
+#
+# So the pane reads that pair from dasshboard's config and reproduces the four
+# shades it derives, ratios and all, from src/theme.rs. That is what keeps the
+# drawing honest under the same rule as the herdr and claude-code panes: it can
+# be laid out wrongly, but it cannot show a colour dasshboard would not draw.
+# The visible consequence is that this one pane does NOT repaint as you type an
+# accent -- correctly, because nothing you type here reaches it.
+DASSH_PRIMARY = "#aaaaaa"
+DASSH_ACCENT = "#ff0000"
+# Its own default host-dot palette, for the sample board shown when dasshboard is
+# not installed and there is no real one to read. Deliberately excludes red --
+# a host owning red would be indistinguishable from the cursor.
+DASSH_TINTS = ("#6fa85a", "#9a68b0", "#c9a227", "#d08442", "#5f8fb0", "#a0714f",
+               "#6a6f78", "#b8bcc4")
+
+
+def _dassh_rgb(hex_colour: str, fallback: str) -> tuple[int, int, int]:
+    """Invalid hex falls back per slot rather than blanking the pane, which is
+    what Theme::new does with a half-typed colour."""
+    if not HEX_RE.match(hex_colour or ""):
+        hex_colour = fallback
+    return tuple(int(hex_colour[i:i + 2], 16) for i in (1, 3, 5))
+
+
+def _dassh_hex(rgb: tuple[int, int, int]) -> str:
+    return "#%02x%02x%02x" % rgb
+
+
+def _dassh_scale(rgb: tuple[int, int, int], f: float) -> tuple[int, int, int]:
+    """Toward black."""
+    return tuple(max(0, min(255, round(v * f))) for v in rgb)
+
+
+def _dassh_lighten(rgb: tuple[int, int, int], f: float) -> tuple[int, int, int]:
+    """Toward white."""
+    return tuple(max(0, min(255, round(v + (255 - v) * f))) for v in rgb)
+
+
+def _dassh_mix(a: tuple[int, int, int], b: tuple[int, int, int], t: float):
+    """`t` of the way from a to b."""
+    return tuple(max(0, min(255, round(x * (1 - t) + y * t))) for x, y in zip(a, b))
+
+
+@dataclass(frozen=True)
+class DasshTheme:
+    """The six colours dasshboard draws with, from the two it is given. Ratios
+    copied from src/theme.rs (bright 0.73 toward white, muted x0.62, faint x0.34,
+    accent_dim = accent mixed 25% toward primary then x0.70) -- its own
+    `the_default_theme_reproduces_the_original_shades` test pins them, so these
+    are safe to mirror."""
+    primary: str
+    accent: str
+    bright: str
+    muted: str
+    faint: str
+    accent_dim: str
+
+    @classmethod
+    def of(cls, primary: str, accent: str) -> "DasshTheme":
+        p = _dassh_rgb(primary, DASSH_PRIMARY)
+        a = _dassh_rgb(accent, DASSH_ACCENT)
+        return cls(
+            primary=_dassh_hex(p),
+            accent=_dassh_hex(a),
+            bright=_dassh_hex(_dassh_lighten(p, 0.73)),
+            muted=_dassh_hex(_dassh_scale(p, 0.62)),
+            faint=_dassh_hex(_dassh_scale(p, 0.34)),
+            accent_dim=_dassh_hex(_dassh_scale(_dassh_mix(a, p, 0.25), 0.70)),
+        )
+
+
+@dataclass(frozen=True)
+class DasshTile:
+    """One tile on the board, as `dasshboard --list` reports it."""
+    local: bool
+    tint: str
+    label: str
+    detail: str
+    note: str
+    hidden: bool
+
+
+# kind, emoji, #hex, then the padded text columns. Anchored on the three fields
+# that cannot contain a space, so a label with one in it stays in one piece.
+DASSH_ROW_RE = re.compile(r"^(local|ssh)\s+\S+\s+(#[0-9a-fA-F]{6})\s+(.*)$")
+
+DASSH_SAMPLE = (
+    DasshTile(False, "#6fa85a", "elcap", "elcap", "", False),
+    DasshTile(False, "#9a68b0", "mufasa", "mufasa", "", False),
+    DasshTile(True, "#6a6f78", "herdr", "workspaces", "hsl", False),
+    DasshTile(False, "#c9a227", "zima", "zima", "~", False),
+)
+
+
+def _dassh_theme_from(path: Path) -> DasshTheme:
+    """The `[theme]` pair out of dasshboard's config.
+
+    Scanned rather than parsed with tomllib on purpose: this file is hand-edited,
+    and a syntax error further down it must cost the pane its colours, not raise.
+    dasshboard itself is per-slot forgiving for the same reason.
+    """
+    primary, accent = DASSH_PRIMARY, DASSH_ACCENT
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return DasshTheme.of(primary, accent)
+    in_theme = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("["):
+            # Only the top-level [theme] table; [[host]] and the rest carry
+            # `color`, which is a tile's identity and not the chrome.
+            in_theme = line.replace(" ", "") == "[theme]"
+            continue
+        if not in_theme or "=" not in line or line.startswith("#"):
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if key not in ("primary", "accent"):
+            continue
+        # The quoted string, taken as a whole. It cannot be split on "#" to drop
+        # a trailing TOML comment the way an ordinary value could -- the value
+        # here *starts* with a "#".
+        quoted = re.match(r"""\s*(["'])(.*?)\1""", value)
+        if not quoted:
+            continue
+        if key == "primary":
+            primary = quoted.group(2).strip()
+        else:
+            accent = quoted.group(2).strip()
+    return DasshTheme.of(primary, accent)
+
+
+def _dassh_tiles_from(output: str) -> list[DasshTile]:
+    """Parse `dasshboard --list`.
+
+    The columns are padded to fixed widths with at least one space between them,
+    so they are split on runs of two or more -- which is exact until a label or a
+    detail fills its column completely, at which point that pair merges and the
+    tile draws with a longer label than it has. That is the whole cost of getting
+    it wrong, and it is the user's own data either way; the alternative is
+    slicing at byte offsets, which the same overflow breaks far worse.
+    """
+    tiles: list[DasshTile] = []
+    for line in output.splitlines():
+        m = DASSH_ROW_RE.match(line.rstrip())
+        if not m:
+            continue
+        kind, tint, rest = m.groups()
+        fields = [f for f in re.split(r"\s{2,}", rest.strip()) if f]
+        if not fields:
+            continue
+        hidden = fields[-1] == "hidden"
+        if hidden:
+            fields = fields[:-1]
+        tiles.append(DasshTile(
+            local=kind == "local",
+            tint=tint.lower(),
+            label=fields[0] if fields else "",
+            detail=fields[1] if len(fields) > 1 else "",
+            note=fields[2] if len(fields) > 2 else "",
+            hidden=hidden,
+        ))
+    return tiles
+
+
+# ---------------------------------------------------------------------------
 # the previews
 # ---------------------------------------------------------------------------
 class Previewer:
@@ -621,6 +830,13 @@ class Previewer:
     def __init__(self) -> None:
         self._tmpdir = Path(tempfile.mkdtemp(prefix="dotfiles-preview."))
         self._helpers: dict[str, tuple[float, str, str]] = {}  # name -> (when, key, out)
+        # dasshboard's board and its colours, read once. Nothing in this window
+        # can change either -- they are its config, not this repo's answers -- so
+        # unlike the status helpers there is no TTL to expire: re-running a
+        # subprocess on every keystroke to be told the same thing would be pure
+        # cost. `None` means "not looked yet"; a failed look caches its own
+        # fallback, so it is not retried on every render either.
+        self._dassh: tuple[DasshTheme, list[DasshTile], bool] | None = None
 
     def cleanup(self) -> None:
         shutil.rmtree(self._tmpdir, ignore_errors=True)
@@ -714,6 +930,91 @@ class Previewer:
         for sentinel, key in zip(CLAUDE_SENTINELS, CLAUDE_RGB_KEYS):
             out = out.replace(sentinel, derived[key])
         return fit_block(Text.from_ansi(out.rstrip("\n")), width)
+
+    def chat(self, derived: dict[str, str], width: int) -> Text:
+        """Claude Code's own UI: a drawing, and the second one in this file.
+
+        The other four panes are real output because the thing being previewed
+        can be made to print one frame. Claude Code cannot -- it is a full-screen
+        interactive program, and there is no `claude --render-one-turn`. So this
+        is drawn, like the herdr pane, and for the same reason.
+
+        What keeps it honest is that **every colour in it is a value out of
+        claude/themes/accent.json.in**, read from `derived` under the same key the
+        template substitutes -- so the pane cannot show an accent placement the
+        installed theme does not have. The one thing it does NOT try to be is a
+        likeness of a chat: it is one line per group of theme keys, laid out in
+        the order they appear on screen, so that ticking the swap shows which
+        half of the interface each accent owns. Anything upstream draws in a
+        colour this repo deliberately leaves alone (error red, the diff colours,
+        the subagent hues) is absent on purpose -- putting it in would suggest
+        those move with the accents too.
+        """
+        # Same floor as the herdr box, and the same short apology: the wording
+        # has to fit the pane it is apologising for.
+        if width < 26:
+            return Text("(too narrow)", style="dim")
+
+        primary = derived["CLAUDE_PRIMARY"]
+        secondary = derived["CLAUDE_SECONDARY"]
+        msg_bg = derived["CLAUDE_MSG_BG"]
+        bash_bg = derived["CLAUDE_BASH_BG"]
+        text_fg = "#ffffff"
+        dim_fg = "#999999"        # upstream `inactive`, which this theme leaves
+        # Two sets of strings rather than one clipped set: a preview that ends in
+        # an ellipsis every time reads as broken layout, and these lines are
+        # short enough to have a genuine narrow spelling.
+        wide = width >= 46
+        out = Text()
+
+        def line(*parts: tuple[str, Style | None]) -> None:
+            for body, style in parts:
+                out.append(body, style)
+            out.append("\n")
+
+        def block(body: str, bg: str, edge: str | None = None) -> None:
+            """A full-width filled row -- what upstream calls a *Background key."""
+            row = Text()
+            if edge is not None:
+                row.append("▌", Style(color=edge))
+            row.append_text(_fit(Text(body, Style(color=text_fg, bgcolor=bg)),
+                                 width - (1 if edge is not None else 0), bg))
+            out.append_text(row)
+            out.append("\n")
+
+        # Your own message: userMessageBackground, under white text.
+        block(" > swap the accents in claude" if wide else " > swap the accents", msg_bg)
+        line()
+        # An answer. The marker and the inline `code` span are both the primary:
+        # codespan resolves the "permission" key, the same one the menu below
+        # uses, which is why they can never be different colours.
+        line(("● ", Style(color=primary)),
+             ("Rendered ", Style(color=text_fg)),
+             ("`accent.json`", Style(color=primary)),
+             (" — 29 keys" if wide else "", Style(color=text_fg)))
+        line()
+        # A command: bashBorder plus bashMessageBackgroundColor, both secondary.
+        block(" ! ls ~/.claude/themes" if wide else " ! ls themes", bash_bg, edge=secondary)
+        line()
+        # A permission menu. Only the selected row is the accent; upstream leaves
+        # the rest at `text`, so painting them all would overstate the answer.
+        line(("❯ 1. Yes", Style(color=primary, bold=True)))
+        line(("  2. Yes, and don't ask again" if wide else "  2. No",
+              Style(color=dim_fg)))
+        # The prompt border, drawn to fill exactly like the herdr box.
+        border = Style(color=primary)
+        line(("╭" + "─" * (width - 2) + "╮", border))
+        # Padded by hand rather than with _fit(), which paints a background:
+        # the inside of the prompt box has none, and Style(bgcolor="") is not a
+        # colour Rich accepts.
+        out.append("│", border)
+        out.append(" > ", Style(color=dim_fg))
+        line((" " * max(0, width - 5), None), ("│", border))
+        line(("╰" + "─" * (width - 2) + "╯", border))
+        # The mode indicators, the whole point of the secondary.
+        line(("  ⏸ plan mode on", Style(color=secondary)),
+             ("   ⏵⏵ accept edits" if wide else "", Style(color=secondary)))
+        return fit_block(out, width)
 
     def posh(self, derived: dict[str, str], answers: Answers, width: int) -> Text:
         """The real prompt: oh-my-posh rendering a real copy of the template."""
@@ -925,6 +1226,246 @@ class Previewer:
         # The window title sits on the top border, as herdr draws it.
         return fit_block(_overlay_title(out, title, 2), width)
 
+    def _dassh_board(self) -> tuple[DasshTheme, list[DasshTile], bool]:
+        """dasshboard's colours and its board, read once per UI session.
+
+        Returns (theme, tiles, real). `real` is False when dasshboard is not
+        installed, in which case the tiles are a sample and the pane says so --
+        the pane's job is to answer "what is this, and do I want it at login",
+        and it has to answer that on a machine that has not installed it yet.
+        """
+        if self._dassh is not None:
+            return self._dassh
+
+        xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+        config = Path(xdg) / "dasshboard" / "config.toml"
+        tiles: list[DasshTile] = []
+        real = False
+        if shutil.which("dasshboard"):
+            try:
+                # --config over guessing the path: it is dasshboard's own answer,
+                # and it costs nothing here since both calls are cached together.
+                proc = subprocess.run(["dasshboard", "--config"],
+                                      capture_output=True, text=True, timeout=5)
+                said = proc.stdout.strip()
+                if proc.returncode == 0 and said:
+                    config = Path(said)
+                # stderr is dropped: --list prints config-load complaints there
+                # and still lists what it could build, which is what we want.
+                proc = subprocess.run(["dasshboard", "--list"],
+                                      capture_output=True, text=True, timeout=5)
+                tiles = _dassh_tiles_from(proc.stdout)
+                real = bool(tiles)
+            except (OSError, subprocess.SubprocessError):
+                tiles = []
+        if not tiles:
+            tiles = list(DASSH_SAMPLE)
+        self._dassh = (_dassh_theme_from(config), tiles, real)
+        return self._dassh
+
+    def dassh(self, width: int) -> Text:
+        """A drawing, like the herdr pane and for the same reason: dasshboard is
+        a full-screen program and cannot be made to print one frame (--list is
+        its tiles, not a picture of them).
+
+        Takes no `derived`, and that is the point -- see the DASSH_PRIMARY block
+        above. Its colours are its own, so this is the one pane in the window
+        that does not move when an accent does.
+        """
+        th, tiles, real = self._dassh_board()
+        # Its own geometry: PAD 2 either side, cells up to CELL_W 38 wide and at
+        # most MAX_COLS 4 of them, a tile being the cell less the 2-cell gutter.
+        PAD, CELL_W, MAX_COLS = 2, 38, 4
+        avail = width - 2 * PAD
+        if avail < 20:
+            # Short, for the reason the herdr pane's is: a long apology overflows
+            # the very pane it is apologising for.
+            return Text("(too narrow)", style="dim")
+        cols = max(1, min(MAX_COLS, avail // CELL_W))
+        shown = tiles[:max(1, min(len(tiles), cols * 2))]
+        cols = min(cols, len(shown))
+        cell_w = max(1, min(CELL_W, avail // cols))
+        tile_w = max(8, cell_w - 2)
+
+        pad = " " * PAD
+        body_w = cols * cell_w - 2          # the last tile has no gutter
+        primary = Style(color=th.primary)
+        muted = Style(color=th.muted)
+        faint = Style(color=th.faint)
+        out = Text()
+
+        # The wordmark: the diamond is the one place the accent appears without
+        # meaning "here", and the two halves of the name take bright and primary.
+        out.append(pad)
+        out.append("◆", Style(color=th.accent))
+        out.append("  DASSH", Style(color=th.bright, bold=True))
+        out.append("BOARD", Style(color=th.primary, bold=True))
+        hosts = sum(1 for t in tiles if not t.local)
+        tally = f"{hosts} ssh · {len(tiles) - hosts} local"
+        gap = body_w - _cell_len("◆  DASSHBOARD") - _cell_len(tally)
+        if gap >= 1:
+            out.append(" " * gap)
+            out.append(tally, muted)
+        out.append("\n\n")
+
+        # The rule: a short accent stroke running into a long hairline.
+        lead = max(3, min(14, body_w // 6))
+        out.append(pad)
+        out.append("━" * lead, Style(color=th.accent))
+        out.append("─" * max(0, body_w - lead), faint)
+        out.append("\n\n")
+
+        # A section title, as draw_section_title lays it out: the name, its tally,
+        # then a hairline to the end of the row. The name is deliberately the
+        # generic "Tiles" and not one of the user's own section names -- `--list`
+        # does not report which section a tile is in, so any real-looking name
+        # here would be invented. Same rule the colours are held to: a drawing may
+        # be laid out approximately, but it must not show config it has not read.
+        title = "Tiles"
+        count = f"  {len(shown)}  "
+        out.append(pad)
+        out.append(title, Style(color=th.bright, bold=True))
+        out.append(count, muted)
+        out.append("─" * max(0, body_w - len(title) - len(count)), faint)
+        out.append("\n")
+
+        # The tiles. Four states read as four border weights rather than four
+        # hues, so the first one is drawn selected (thick, accent) and the rest
+        # idle (rounded hairline) -- which is what the board looks like the
+        # moment it opens.
+        for start in range(0, len(shown), cols):
+            row = shown[start:start + cols]
+            # 1-9 open a tile directly, so those are the ones that carry a number.
+            edges = [self._dassh_tile(t, tile_w, th, sel=(start + i) == 0,
+                                      number=(start + i + 1) if start + i < 9 else 0)
+                     for i, t in enumerate(row)]
+            for line_no in range(4):
+                out.append(pad)
+                for i, tile in enumerate(edges):
+                    if i:
+                        out.append("  ")
+                    out.append_text(tile[line_no])
+                out.append("\n")
+
+        # The footer, on the bottom edge: keys in the primary, what they do in the
+        # hairline colour. Whole hints are dropped from the RIGHT as the pane
+        # narrows, never clipped mid-hint, which is what key_hints does to the real
+        # one -- a footer that merely overflows ends in a key nobody has. Its own
+        # Browse list in its own order, so what falls off here is what falls off
+        # there. `t/w/c where` is left out: that is only advertised where something
+        # can open a tab, a property of the terminal rather than of the board.
+        hints = [("⏎", "open"), ("/", "find"), ("a", "add"), ("e", "edit"),
+                 ("y", "dup"), ("d", "delete"), ("x/X", "hide"), ("m", "move"),
+                 ("S", "groups"), ("s", "settings"), ("q", "shell")]
+        out.append("\n")
+        out.append(pad)
+        used = 0
+        for i, (key, what) in enumerate(hints):
+            span = len(key) + 1 + len(what) + (3 if i else 0)
+            if used + span > body_w:
+                break
+            if i:
+                out.append("   ")
+            out.append(key, primary)
+            out.append(f" {what}", faint)
+            used += span
+        if not real:
+            # Said out loud rather than left to be inferred from hostnames that
+            # are not yours: a sample board that looks like a real reading is the
+            # one thing this pane must not be. Kept short for the reason the herdr
+            # pane's "(too narrow)" is -- a long apology is clipped by the very
+            # pane it is apologising for.
+            out.append("\n")
+            out.append(pad)
+            out.append("(sample -- not installed)", muted)
+        return fit_block(out, width)
+
+    def _dassh_tile(self, tile: DasshTile, w: int, th: DasshTheme, sel: bool,
+                    number: int = 0) -> list[Text]:
+        """One tile, as four lines: border, name, target, border.
+
+        Selection is a thick accent border and a bright label; idle is a hairline
+        and the plain primary. `local` and `hidden` are tags on the top border in
+        accent_dim, and the folder-or-command note sits on the bottom one -- both
+        exactly where draw_tile puts them, because a tile has only two lines
+        inside it and they are spent on who it is and how it connects.
+
+        Everything is measured in CELLS, not characters: a note is a shell command
+        or a path and can hold anything, and one double-width glyph in it would
+        push the right-hand border a cell out on that line alone.
+        """
+        edge = Style(color=th.accent if sel else th.faint)
+        label_style = Style(color=th.bright if sel else th.primary, bold=True)
+        if tile.hidden and not sel:
+            label_style = Style(color=th.muted, bold=True)
+        h, v = ("━", "┃") if sel else ("─", "│")
+        tl, tr, bl, br = ("┏", "┓", "┗", "┛") if sel else ("╭", "╮", "╰", "╯")
+        room = w - 2
+
+        def border(left: str, right: str, head: Text | None, tail: Text | None) -> Text:
+            t = Text()
+            t.append(left, edge)
+            # One leading rule cell before either title, as ratatui draws them.
+            t.append(h, edge)
+            spent = 1
+            if head is not None and head.cell_len <= room - spent:
+                t.append_text(head)
+                spent += head.cell_len
+            # The tail is what gives way when they cannot both fit: the number is
+            # a key you can press and the tag is a label for what you are seeing.
+            if tail is not None and tail.cell_len <= room - spent:
+                t.append(h * (room - spent - tail.cell_len), edge)
+                t.append_text(tail)
+            else:
+                t.append(h * max(0, room - spent), edge)
+            t.append(right, edge)
+            return t
+
+        def tag(text: str, style: Style, budget: int) -> Text | None:
+            """` text `, spaces included, clipped to `budget` cells."""
+            if not text or budget < 3:
+                return None
+            t = Text(f" {text} ", style)
+            if t.cell_len > budget:
+                t.truncate(budget, overflow="ellipsis")
+            return t
+
+        # The tag slot holds one thing, and "hidden" beats "local": a tile is only
+        # ever drawn hidden while you are looking for hidden tiles, so that is
+        # what tells it from the rest.
+        top_tag = "hidden" if tile.hidden else ("local" if tile.local else "")
+        lines = [border(
+            tl, tr,
+            tag(str(number), Style(color=th.accent if sel else th.muted, bold=sel),
+                room - 1) if number else None,
+            tag(top_tag, Style(color=th.accent_dim), room - 6),
+        )]
+
+        # Marker, host dot, name. The bar reads as a state and the dot as identity,
+        # which is why the two never share a glyph.
+        name = Text()
+        name.append(v, edge)
+        name.append("▌" if sel else " ", Style(color=th.accent))
+        name.append(" ● ", Style(color=tile.tint if HEX_RE.match(tile.tint) else th.muted))
+        name.append_text(_cell_block(tile.label, room - 4, label_style))
+        name.append(v, edge)
+        lines.append(name)
+
+        detail = Text()
+        detail.append(v, edge)
+        detail.append("    ")
+        detail.append_text(_cell_block(tile.detail, room - 4,
+                                       Style(color=th.primary if sel else th.muted)))
+        detail.append(v, edge)
+        lines.append(detail)
+
+        # width - 6, the budget draw_tile gives it, so a long command reads as a
+        # clipped tail rather than as the whole bottom edge of the tile.
+        lines.append(border(bl, br, None,
+                            tag(tile.note, Style(color=th.primary if sel else th.muted),
+                                room - 6)))
+        return lines
+
     # -- helpers ------------------------------------------------------------
 
 
@@ -979,6 +1520,29 @@ def _fit(text: Text, width: int, bg: str) -> Text:
     return out
 
 
+def _cell_len(s: str) -> int:
+    return Text(s).cell_len
+
+
+def _cell_block(s: str, width: int, style: Style) -> Text:
+    """`s` in exactly `width` display cells -- clipped with an ellipsis when it is
+    too long, space-padded when it is short.
+
+    Cells rather than characters, and a helper rather than str.ljust(), because
+    the dasshboard pane draws tiles out of the user's own hostnames, paths and
+    commands: one double-width glyph in a label and ljust() would put that tile's
+    right-hand border a cell further out than every other tile's.
+    """
+    if width <= 0:
+        return Text()
+    out = Text(s, style)
+    if out.cell_len > width:
+        out.truncate(width, overflow="ellipsis")
+    if out.cell_len < width:
+        out.append(" " * (width - out.cell_len), style)
+    return out
+
+
 def _overlay_title(block: Text, title: Text, column: int) -> Text:
     """Write a title into the first line of a box drawing, over the border."""
     lines = block.split("\n")
@@ -1001,7 +1565,7 @@ def _overlay_title(block: Text, title: Text, column: int) -> Text:
 # ---------------------------------------------------------------------------
 # The preview panes, by widget id. refresh_previews() sizes each one from its
 # own widget, so this is the list of things that have to exist in compose().
-PREVIEW_PANES = ("posh", "hsl-bar", "claude", "herdr", "plan")
+PREVIEW_PANES = ("posh", "hsl-bar", "claude", "claude-chat", "herdr", "dassh", "plan")
 
 SWATCH_W = 4
 # Which accent the grid is editing. Deliberately its own tuple rather than a
@@ -1328,8 +1892,25 @@ class SetupApp(App):
     Checkbox:focus { text-style: bold; }
     .preview { border: round white; padding: 0 1; height: auto; margin-bottom: 1; }
     .preview.wide { padding: 0; }
-    #buttons { height: 3; align: center middle; padding: 0 1; }
-    #buttons Button { margin: 0 1; }
+    /* One row, no border. Textual's Button is 3 tall by default -- a `tall`
+       border plus its label -- which made it the last raised control in a panel
+       where the Checkbox, ChoiceRow and hex Input are all flat one-liners, and
+       cost three of the rows the preview column wants. `min-width: 0` with
+       `width: auto` is the other half of it: Button carries a min-width of 16,
+       so a flattened button would still have sat in a 16-cell slot with its
+       label floating in the middle of it. The fill and the text colour are set
+       in _sync_chrome(), not here -- they follow the chosen primary. */
+    #buttons { height: 1; align: center middle; padding: 0 1; }
+    #buttons Button {
+      height: 1; min-height: 1; width: auto; min-width: 0;
+      border: none; padding: 0 2; margin: 0 1; text-style: none;
+    }
+    /* Keyboard focus has to be visible without changing the height, which rules
+       out the usual border. Reverse works on both buttons: it flips the filled
+       one to dark-on-light and gives the unfilled one a fill it does not
+       otherwise have. */
+    #buttons Button:focus { text-style: bold reverse; }
+    #buttons Button:hover { text-style: bold; }
     #status { height: 1; padding: 0 1; color: $error; }
     /* The one place wrapping is wanted: these are prose, and they carry their
        own newlines where a break is meant. Kept short enough to fit a 44-cell
@@ -1404,11 +1985,31 @@ class SetupApp(App):
                 yield Checkbox("Slurm job pill", self.answers.show_slurm, id="show_slurm")
                 yield Checkbox("date / time pill", self.answers.show_datetime, id="show_datetime")
 
+                # Previewed by the "herdr" and "dasshboard" panes below -- both
+                # drawings, since neither program can print one frame. A
+                # ChoiceRow rather than two checkboxes because the answer is
+                # exactly one of three: two boxes could both be ticked, which is
+                # a state the one login slot cannot hold.
                 yield Static("Shell login", classes="section")
-                yield Checkbox("start herdr at login", self.answers.hsl_login,
-                               id="hsl_login")
-                yield Static(Text("herdr, plus the status line where hsl is\n"
-                                  "installed. NO_HSL=1 skips it.", style="italic"),
+                yield ChoiceRow("login_start", "start at login", LOGIN_STARTS,
+                                self.answers.login_start, id="login_start")
+                yield Static(Text("what opening a terminal opens. herdr comes\n"
+                                  "with the status line where hsl is installed.\n"
+                                  "NO_LOGIN_START=1 skips whichever it is.",
+                                  style="italic"),
+                             classes="hint")
+
+                # Previewed by the "claude code" pane, which is drawn rather than
+                # real -- Claude Code is a full-screen program and cannot print
+                # one frame. It is deliberately NOT the status line pane above
+                # it: this answer does not reach that bar, and wiring it to react
+                # would be previewing a change that is not the one being made.
+                yield Static("Claude Code", classes="section")
+                yield Checkbox("swap the accents in its UI", self.answers.claude_swap,
+                               id="claude_swap")
+                yield Static(Text("menus, commands and answer text take\n"
+                                  "the primary; modes take the secondary.\n"
+                                  "Not the status line.", style="italic"),
                              classes="hint")
 
                 yield Static("oh-my-posh prompt", classes="section")
@@ -1459,17 +2060,29 @@ class SetupApp(App):
                 with Container(classes="preview wide") as claude_box:
                     claude_box.border_title = "claude code status line"
                     yield Static(id="claude")
+                with Container(classes="preview wide") as chat_box:
+                    chat_box.border_title = "claude code"
+                    yield Static(id="claude-chat")
                 with Container(classes="preview") as herdr_box:
                     herdr_box.border_title = "herdr"
                     yield Static(id="herdr")
+                # Beside herdr, because the two are the answers to one question:
+                # these are what "start at login" can open.
+                with Container(classes="preview") as dassh_box:
+                    dassh_box.border_title = "dasshboard"
+                    yield Static(id="dassh")
                 if self.catalogue:
                     with Container(classes="preview wide") as plan_box:
                         plan_box.border_title = "install plan"
                         yield Static(id="plan")
         yield Static("", id="status")
         with Horizontal(id="buttons"):
-            yield Button("Install  (ctrl+s)", variant="success", id="install")
-            yield Button("Quit  (esc)", variant="error", id="quit")
+            # No variant= any more: success green and error red were the two
+            # colours in the window that belonged to neither accent, and on a
+            # one-row button the fill IS the button, so they read louder flat
+            # than they ever did bordered. _sync_chrome() paints them instead.
+            yield Button("Install · ctrl+s", id="install")
+            yield Button("Quit · esc", id="quit")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -1627,12 +2240,33 @@ class SetupApp(App):
         )
 
     def _sync_chrome(self) -> None:
-        """Only the section headings follow the chosen primary; the borders stay
-        white (set in CSS) so a preview pane is framed by something that is
-        neither one of the two accents nor the background's own grey."""
+        """The section headings and the Install button follow the chosen primary;
+        the borders stay white (set in CSS) so a preview pane is framed by
+        something that is neither one of the two accents nor the background's
+        own grey.
+
+        Install is filled with the accent and Quit is not, which is the whole of
+        the emphasis between them -- one is what the wizard is for and the other
+        is the way out. Black on the fill for the reason the status bars and the
+        Claude bubbles use black on theirs: every palette swatch is chosen light
+        enough to carry it, and readable_on_dark() lifts a custom hex that is
+        not. Set here rather than in CSS because it changes with every keystroke
+        in the hex boxes, and applied as inline styles, which outrank the
+        variant colours Button would otherwise paint itself with.
+        """
         colour = readable_on_dark(self.answers.primary)
         for heading in self.query(".section"):
             heading.styles.color = colour
+        try:
+            install = self.query_one("#install", Button)
+            quit_button = self.query_one("#quit", Button)
+        except Exception:      # called before compose() has mounted them
+            return
+        install.styles.background = colour
+        install.styles.color = "#000000"
+        install.styles.text_style = "bold"
+        quit_button.styles.background = "transparent"
+        quit_button.styles.color = "#999999"
 
     def _sync_titles(self) -> None:
         """The heading names the scheme of the accent being edited.
@@ -1711,7 +2345,11 @@ class SetupApp(App):
                 "posh": self.previewer.posh(derived, answers, w("posh")),
                 "hsl-bar": self.previewer.statusline(derived, answers, w("hsl-bar")),
                 "claude": self.previewer.claude(derived, answers, w("claude")),
+                "claude-chat": self.previewer.chat(derived, w("claude-chat")),
                 "herdr": self.previewer.herdr(derived, w("herdr")),
+                # No `derived`: its colours are its own config's, not this
+                # window's answers. See the DASSH_PRIMARY block.
+                "dassh": self.previewer.dassh(w("dassh")),
             }
             if self.catalogue:
                 panes["plan"] = self.previewer.plan(derived, answers, w("plan"))
@@ -1785,7 +2423,9 @@ def dump(answers: Answers, width: int) -> None:
             ("oh-my-posh", previewer.posh(derived, answers, width)),
             ("hsl status line", previewer.statusline(derived, answers, width)),
             ("claude code status line", previewer.claude(derived, answers, width)),
+            ("claude code", previewer.chat(derived, width)),
             ("herdr", previewer.herdr(derived, width)),
+            ("dasshboard", previewer.dassh(width)),
             (f"install plan  ({privilege_summary()})",
              previewer.plan(derived, answers, width)),
         ):

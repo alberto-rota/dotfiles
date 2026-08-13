@@ -12,14 +12,18 @@
 #   PRIMARY SECONDARY MACHINE USER_NAME NEUTRAL_FG
 #   SHOW_HOST SHOW_GPU SHOW_TEMP SHOW_SLURM SHOW_DATETIME
 #   OMP_ICON_MODE OMP_ICON OMP_TEXT OMP_CHEVRON_OK OMP_CHEVRON_ERROR
-#   (and the superseded OMP_COLOR_ICON / OMP_COLOR_TEXT / OMP_COLOR_CHEVRON,
-#    which are migrated to the above when the new answers are absent)
+#   CLAUDE_SWAP LOGIN_START
+#   (and the superseded OMP_COLOR_ICON / OMP_COLOR_TEXT / OMP_COLOR_CHEVRON and
+#    HSL_LOGIN, which are migrated to the above when the new answers are absent)
 # Sets:
 #   PRIMARY_DIM MACHINE_LOWER USER_NAME
 #   OMP_ICON_COLOR OMP_ICON_COLOR_JOB OMP_TEXT_COLOR OMP_CHEVRON_FG OMP_CHEVRON_ERR
 #   OMP_PATH_COLOR OMP_TIME_COLOR OMP_PY_COLOR
 #   OMP_GIT_CLEAN OMP_GIT_BEHIND OMP_GIT_AHEAD OMP_GIT_DIVERGED OMP_GIT_DIRTY
 #   CLAUDE_MODEL_RGB CLAUDE_EFFORT_RGB CLAUDE_USAGE_RGB CLAUDE_WEEK_RGB CLAUDE_CTX_RGB
+#   CLAUDE_PRIMARY CLAUDE_SECONDARY CLAUDE_PRIMARY_SHIMMER CLAUDE_SECONDARY_SHIMMER
+#   CLAUDE_MSG_BG CLAUDE_MSG_BG_HOVER CLAUDE_MEMORY_BG CLAUDE_SELECTION_BG
+#   CLAUDE_TRACK_BG CLAUDE_BASH_BG
 #   TMUX_STATUS_LEFT TMUX_STATUS_RIGHT HSL_STATUS_LEFT HSL_STATUS_RIGHT
 
 # --- the palette offered by both front-ends -------------------------------------
@@ -201,6 +205,32 @@ accent_hex() {
 # (dracula/snow, nord/snow) clips against white and pulses to a standstill. Down
 # is as good as up there, and it is the same reasoning as the git band being
 # centred on its stop rather than fixed: keep the contrast, whatever was picked.
+#
+# CLAUDE_SWAP turns round the two accents Claude Code paints its own UI with --
+# the menus, the mode indicators, the command blocks and the answer text -- and
+# nothing else. That is why it is a flag into awk rather than two swapped shell
+# variables: "shimmer" and "tint" read their ends from it while "omp", "git" and
+# "claude" go on running primary -> secondary. It exists because Claude Code is
+# the one place the primary lands on a lot of text you read all day (permission
+# prompts, the spinner, every inline code span in an answer) while the secondary
+# only ever flags a mode, so the accent that reads best there is not always the
+# one that reads best as a background.
+#
+# The "claude" ramp -- the status bar bubbles -- is deliberately outside it. A
+# bar is read the way the tmux and hsl bars beside it are read, and turning one
+# of the three round would make the row of them disagree about which accent
+# comes first. This answer is about the colours INSIDE the program.
+#
+# The fifth ramp, "tint", is the filled blocks Claude Code draws BEHIND white
+# text -- your own messages, a bash message, a # memory, a selection, the
+# unfilled half of the usage bar. They are the accent hue at a fixed low
+# lightness rather than a position on the ramp, because a background has one
+# job (sit under text and stay legible) and the lightnesses upstream chose for
+# them are already right: rgb(55,55,55) for a message block is L=0.22.
+# Saturation is CAPPED at 0.40 rather than passed through, the only place in
+# this file that does that: at L=0.22 a fully saturated accent stops being a
+# tinted grey and becomes a colour, which is a background competing with the
+# text on top of it. A grey accent still gives exactly upstream greys.
 accent_ramps() {
   local p="${PRIMARY#\#}" s="${SECONDARY#\#}"
   # Hex is decoded by hand rather than with strtonum(), which is a gawk
@@ -208,7 +238,7 @@ accent_ramps() {
   # "calling undefined function strtonum" -- taking the Claude Code status
   # line's colour ramp and half the prompt's with it. index() into a digit
   # string is POSIX awk.
-  awk -v p="$p" -v s="$s" '
+  awk -v p="$p" -v s="$s" -v swap="${CLAUDE_SWAP:-0}" '
     function hex(x, i,   d, v) {
       v = 0
       for (d = 0; d < 2; d++)
@@ -261,6 +291,18 @@ accent_ramps() {
       if (dh >  0.5) dh -= 1                     # shorter way round the wheel
       if (dh < -0.5) dh += 1
 
+      # Where the Claude Code UI takes its two accents from. cp is the ramp
+      # position of the accent it calls primary and cs of the one it calls
+      # secondary, so swap=1 runs those backwards along the same line. See the
+      # CLAUDE_SWAP paragraph above the awk block -- and note what is NOT below:
+      # the status line does not use these.
+      cp = swap ? 1 : 0
+      cs = swap ? 0 : 1
+
+      # The status bar bubbles, and deliberately NOT swap-aware: it is a bar,
+      # read the way the tmux and hsl bars beside it are read, and those two run
+      # primary -> secondary. CLAUDE_SWAP is about the colours inside the
+      # program -- the menus, the commands and the answer text.
       line = "claude"
       for (i = 0; i < 5; i++) { stop(i / 4, 0.50); line = line " " torgb(h, sat, l) }
       print line
@@ -294,10 +336,21 @@ accent_ramps() {
       # cannot be written in here: an apostrophe would close the program.
       line = "shimmer"
       for (i = 0; i < 2; i++) {
-        stop(i, 0)                                 # 0 = primary, 1 = secondary
+        stop(i == 0 ? cp : cs, 0)          # Claude primary, then its secondary
         line = line " " tohex(h, sat, l > 0.80 ? l - 0.12 : l + 0.12)
       }
       print line
+
+      # The filled blocks, in the order the emit list reads them: message,
+      # message hovered, memory, selection, the empty half of the usage bar --
+      # all from the accent Claude Code calls primary -- and then the bash
+      # message block, from its secondary, so it sits with bashBorder around it.
+      # Lightnesses are the ones upstream picked for these same five keys.
+      stop(cp, 0); ph = h; ps = sat > 0.40 ? 0.40 : sat
+      stop(cs, 0); sh = h; ss = sat > 0.40 ? 0.40 : sat
+      print "tint " tohex(ph, ps, 0.22) " " tohex(ph, ps, 0.28) \
+              " " tohex(ph, ps, 0.25) " " tohex(ph, ps, 0.31) \
+              " " tohex(ph, ps, 0.38) " " tohex(sh, ss, 0.25)
     }'
 }
 
@@ -306,6 +359,26 @@ derive() {
   MACHINE_LOWER="$(to_lower "$MACHINE")"
   # Not prompted for: the login name is a fact about the machine, not a taste.
   USER_NAME="${USER_NAME:-$(id -un 2>/dev/null || echo "${USER:-user}")}"
+
+  # --- what opens when you open a terminal --------------------------------------
+  # Three-way, and normalised here rather than defaulted in install.sh's own
+  # defaults block, because it has a predecessor to migrate: HSL_LOGIN was the
+  # boolean "start hsl at login", so a theme.env written before dasshboard
+  # existed says HSL_LOGIN=1 and means LOGIN_START=herdr. Only migrated when the
+  # new answer is genuinely unset -- same rule as the OMP_COLOR_* block below,
+  # and the reason install.sh initialises LOGIN_START empty and calls derive()
+  # once up front to normalise it.
+  #
+  # Anything unrecognised falls back to "none" rather than aborting the install.
+  # This answer is the one that decides what a login does, so a typo in a
+  # hand-edited theme.env must cost you an autostart, never a shell.
+  if [ -z "${LOGIN_START:-}" ] && [ -n "${HSL_LOGIN:-}" ]; then
+    [ "$HSL_LOGIN" = 1 ] && LOGIN_START=herdr || LOGIN_START=none
+  fi
+  case "${LOGIN_START:-}" in
+    herdr|dasshboard|none) ;;
+    *) LOGIN_START=none ;;
+  esac
 
   # --- oh-my-posh accent placement ----------------------------------------------
   # Every accented part of the prompt names its own colour (primary, secondary
@@ -378,8 +451,27 @@ derive() {
       # The pulse partners for Claude Code's own UI theme -- see the "shimmer"
       # block in accent_ramps() and claude/themes/accent.json.in.
       shimmer) read -r CLAUDE_PRIMARY_SHIMMER CLAUDE_SECONDARY_SHIMMER <<<"$ramp_rest" ;;
+      # The blocks Claude Code fills behind text, same file. Backgrounds, so
+      # these are the only accent-derived colours here that are capped rather
+      # than passed through -- see the "tint" paragraph in accent_ramps().
+      tint)    read -r CLAUDE_MSG_BG CLAUDE_MSG_BG_HOVER CLAUDE_MEMORY_BG \
+                       CLAUDE_SELECTION_BG CLAUDE_TRACK_BG CLAUDE_BASH_BG <<<"$ramp_rest" ;;
     esac
   done <<<"$(accent_ramps)"
+
+  # Claude Code's own two accents, which are this machine's two accents unless
+  # CLAUDE_SWAP says otherwise. Resolved here rather than left as @PRIMARY@ /
+  # @SECONDARY@ in claude/themes/accent.json.in for the same reason the OMP_*
+  # colours are: one assembly, and the template stays a straight substitution.
+  # The five ramps above already read their ends from the same answer, so the
+  # theme, the status line bubbles, the shimmers and the tints cannot disagree
+  # about which way round Claude Code is.
+  CLAUDE_SWAP="${CLAUDE_SWAP:-0}"
+  if [ "$CLAUDE_SWAP" = 1 ]; then
+    CLAUDE_PRIMARY="$SECONDARY"; CLAUDE_SECONDARY="$PRIMARY"
+  else
+    CLAUDE_PRIMARY="$PRIMARY";   CLAUDE_SECONDARY="$SECONDARY"
+  fi
 
   # --- status line assembly -------------------------------------------------------
   # tmux's status bar and hsl's (bin/hsl, the herdr wrapper) are meant to look
@@ -458,7 +550,10 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
            OMP_PATH_COLOR OMP_TIME_COLOR OMP_PY_COLOR \
            OMP_GIT_CLEAN OMP_GIT_BEHIND OMP_GIT_AHEAD OMP_GIT_DIVERGED OMP_GIT_DIRTY \
            CLAUDE_MODEL_RGB CLAUDE_EFFORT_RGB CLAUDE_USAGE_RGB CLAUDE_WEEK_RGB CLAUDE_CTX_RGB \
+           CLAUDE_PRIMARY CLAUDE_SECONDARY \
            CLAUDE_PRIMARY_SHIMMER CLAUDE_SECONDARY_SHIMMER \
+           CLAUDE_MSG_BG CLAUDE_MSG_BG_HOVER CLAUDE_MEMORY_BG \
+           CLAUDE_SELECTION_BG CLAUDE_TRACK_BG CLAUDE_BASH_BG \
            TMUX_STATUS_LEFT TMUX_STATUS_RIGHT HSL_STATUS_LEFT HSL_STATUS_RIGHT; do
     printf '%s=%s\n' "$v" "${!v}"
   done

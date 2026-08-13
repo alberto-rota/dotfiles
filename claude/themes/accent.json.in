@@ -11,46 +11,97 @@
 #>> lineNumberActive) that never existed and never applied. If a key stops working
 #>> after a Claude Code update, it was renamed upstream and the failure will look
 #>> exactly like this file being ignored. The list can be recovered from the
-#>> binary:  strings ~/.local/share/claude/versions/<v> | grep -A40 autoAccept
+#>> binary (76 keys as of 2.1.228):
+#>>   strings ~/.local/share/claude/versions/<v> \
+#>>     | grep -o "autoAccept:.\{0,3000\}" | grep 'text:"rgb(2' | head -1
 #>>
 #>> Accepted value forms are rgb(r,g,b), #rrggbb, #rgb, ansi256(n) and
 #>> ansi:<name>. Plain hex is what the accents already are, so they substitute
 #>> straight in with no conversion.
+#>>
+#>> @CLAUDE_PRIMARY@ / @CLAUDE_SECONDARY@ and NOT @PRIMARY@ / @SECONDARY@: this is
+#>> the one file that honours CLAUDE_SWAP, the answer that turns Claude Code's two
+#>> accents round without touching the prompt or either status bar. lib/derive.sh
+#>> resolves the pair, and the shimmer and tint ramps below come out of the same
+#>> answer, so nothing here can end up half swapped.
   "name": "@MACHINE_LOWER@ accents",
   "base": "dark",
   "overrides": {
-#>> PRIMARY -- everything that is Claude addressing you. These four keys are the
-#>> light blue (#b1b9f9 by default) that shows up in permission prompts, the
+#>> PRIMARY -- everything that is Claude addressing you. These keys are the light
+#>> blue (#b1b9f9 by default) that shows up in permission prompts, the
 #>> autocomplete menu and the #-memory hints; the spinner blue (#93a5ff) and the
 #>> brand orange (#d77757) join them so the whole conversation reads as one hue.
-    "permission": "@PRIMARY@",
+#>>
+#>> "permission" is doing more work than its name suggests and is worth knowing
+#>> about before repointing it: the markdown renderer draws every inline `code`
+#>> span in Claude's answers with it --
+#>>   case"codespan": return ko("permission", t)(e.text)
+#>> -- so this key is the highlighted text in the replies as well as the prompt
+#>> menus, and there is no separate key to split the two. Nothing else in an
+#>> answer is themeable at all: strong is bold, em is italic, headings are bold
+#>> and none of the three takes a colour. Worth remembering that a primary of
+#>> #999999 is upstream inactive exactly (rgb(153,153,153)), which is how an
+#>> accent that IS being applied to codespans can read as unstyled dim text.
+    "permission": "@CLAUDE_PRIMARY@",
     "permissionShimmer": "@CLAUDE_PRIMARY_SHIMMER@",
-    "suggestion": "@PRIMARY@",
-    "remember": "@PRIMARY@",
-    "promptBorder": "@PRIMARY@",
+    "suggestion": "@CLAUDE_PRIMARY@",
+    "remember": "@CLAUDE_PRIMARY@",
+    "promptBorder": "@CLAUDE_PRIMARY@",
     "promptBorderShimmer": "@CLAUDE_PRIMARY_SHIMMER@",
-    "claude": "@PRIMARY@",
+    "claude": "@CLAUDE_PRIMARY@",
     "claudeShimmer": "@CLAUDE_PRIMARY_SHIMMER@",
-    "claudeBlue_FOR_SYSTEM_SPINNER": "@PRIMARY@",
+    "claudeBlue_FOR_SYSTEM_SPINNER": "@CLAUDE_PRIMARY@",
     "claudeBlueShimmer_FOR_SYSTEM_SPINNER": "@CLAUDE_PRIMARY_SHIMMER@",
-    "clawd_body": "@PRIMARY@",
+    "clawd_body": "@CLAUDE_PRIMARY@",
+#>> rate_limit_fill is the filled half of the usage bar and is upstream the same
+#>> #b1b9f9 as permission; briefLabelClaude is the "Claude" label in brief mode,
+#>> upstream the same brand orange as "claude". Both joined the theme after this
+#>> file was first written, which is the ordinary way a key gets missed here --
+#>> the merge is silent in that direction too, so an unclaimed key just keeps
+#>> upstream colour and looks like a decision.
+    "rate_limit_fill": "@CLAUDE_PRIMARY@",
+    "briefLabelClaude": "@CLAUDE_PRIMARY@",
 #>> SECONDARY -- everything that says a MODE is engaged, which is exactly the set
 #>> you want to catch your eye against the primary you are reading all day.
-#>> Upstream spends three separate hues on these (purple #af87ff, teal #48968c,
+#>> Upstream spends four separate hues on these (purple #af87ff, teal #48968c,
 #>> pink #fd5db1, blue #4782c8); they are one colour here because what matters is
 #>> "a mode is on", and which mode is already written next to the indicator.
-    "autoAccept": "@SECONDARY@",
+#>> fastMode (upstream orange) and effortUltra (upstream the autoAccept purple)
+#>> are the same kind of statement and join them.
+    "autoAccept": "@CLAUDE_SECONDARY@",
     "autoAcceptShimmer": "@CLAUDE_SECONDARY_SHIMMER@",
-    "skill": "@SECONDARY@",
-    "merged": "@SECONDARY@",
-    "planMode": "@SECONDARY@",
-    "bashBorder": "@SECONDARY@",
-    "ide": "@SECONDARY@"
+    "skill": "@CLAUDE_SECONDARY@",
+    "merged": "@CLAUDE_SECONDARY@",
+    "planMode": "@CLAUDE_SECONDARY@",
+    "bashBorder": "@CLAUDE_SECONDARY@",
+    "ide": "@CLAUDE_SECONDARY@",
+    "fastMode": "@CLAUDE_SECONDARY@",
+    "fastModeShimmer": "@CLAUDE_SECONDARY_SHIMMER@",
+    "effortUltra": "@CLAUDE_SECONDARY@",
+#>> THE FILLED BLOCKS -- the six keys that are a background under white text
+#>> rather than text themselves: your own message, that message hovered, a #
+#>> memory, a selection, the empty half of the usage bar, and a bash message.
+#>> They are the accent hue at fixed low lightness (the lightnesses upstream
+#>> chose for these same keys) with saturation capped at 0.40, NOT positions on
+#>> the ramp -- see the "tint" paragraph in lib/derive.sh, which is also where
+#>> the reason for the cap is. A grey accent reproduces upstream greys almost
+#>> exactly, which is the property that makes the cap the right call.
+#>>
+#>> bashMessageBackgroundColor takes the SECONDARY tint on purpose: bashBorder is
+#>> already the secondary, so the block and the border around it agree.
+    "userMessageBackground": "@CLAUDE_MSG_BG@",
+    "userMessageBackgroundHover": "@CLAUDE_MSG_BG_HOVER@",
+    "memoryBackgroundColor": "@CLAUDE_MEMORY_BG@",
+    "selectionBg": "@CLAUDE_SELECTION_BG@",
+    "rate_limit_empty": "@CLAUDE_TRACK_BG@",
+    "bashMessageBackgroundColor": "@CLAUDE_BASH_BG@"
 #>> DELIBERATELY NOT ACCENTED, and the reason is the one slurm-status.sh.in gives
 #>> for drawing job state in fixed neon green and yellow: a colour that answers a
 #>> question has to answer it the same way on every machine, whatever accents are
 #>> set. So error, warning, success, the six diff colours, every
-#>> *_FOR_SUBAGENTS_ONLY (they only work by being distinct from each other), and
-#>> text / inverseText / inactive / subtle / background all keep upstream values.
+#>> *_FOR_SUBAGENTS_ONLY (they only work by being distinct from each other), the
+#>> seven rainbow_* pairs (same), briefLabelYou (it only works by differing from
+#>> briefLabelClaude above), and text / inverseText / inactive / subtle /
+#>> background all keep upstream values.
   }
 }

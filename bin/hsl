@@ -101,7 +101,7 @@ command -v "$HERDR_BIN" >/dev/null 2>&1 || {
 }
 
 # Both of the below degrade to plain herdr rather than refusing to start. This
-# script is what the login autostart runs (shell/hsl-login.sh.in), and a missing
+# script is what the login autostart runs (shell/login-start.sh.in), and a missing
 # status line is not a reason to deny somebody their workspace manager -- but it
 # is said out loud, because silently doing nothing is exactly the failure this
 # whole substitute exists to fix.

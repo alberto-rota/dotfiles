@@ -32,7 +32,9 @@ panes = {
     "posh":       lambda w: pv.posh(derived, a, w),
     "statusline": lambda w: pv.statusline(derived, a, w),
     "claude":     lambda w: pv.claude(derived, a, w),
+    "claude-chat": lambda w: pv.chat(derived, w),
     "herdr":      lambda w: pv.herdr(derived, w),
+    "dassh":      lambda w: pv.dassh(w),
     "plan":       lambda w: pv.plan(derived, a, w),
 }
 bad = []

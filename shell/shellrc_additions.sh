@@ -52,7 +52,7 @@ wbclean() {
 #===============================================================================================================================
 # The two rc aliases follow the shell you are in: under zsh, "bashrc" opens
 # ~/.zshrc and "rebash" re-sources it. The names are kept (muscle memory, and
-# hsl-login.sh's guards talk about "rebash"); only what they point at moves.
+# login-start.sh's guards talk about "rebash"); only what they point at moves.
 alias bashrc="nano $DOTFILES_RC"
 alias rebash="source $DOTFILES_RC"
 alias cda="conda deactivate"
@@ -280,12 +280,20 @@ export NVM_DIR="$HOME/.nvm"
 [ "$DOTFILES_SHELL" = bash ] && [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
 
 #===============================================================================================================================
-### HSL AUTOSTART  (herdr + the status line at login, if that was asked for)
+### LOGIN AUTOSTART  (herdr, or a dasshboard home screen, if that was asked for)
 #===============================================================================================================================
-# LAST, deliberately: when it does start herdr it blocks until you quit it, so
-# anything after this line would not run until then. install.sh renders it from
-# shell/hsl-login.sh.in with the answer baked in, so when the answer is "no" this
-# is a file that returns on its second line. NO_HSL=1 skips it either way.
-if [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/hsl-login.sh" ]; then
-  . "${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/hsl-login.sh"
+# LAST, deliberately: when it does start something it blocks until you quit it,
+# so anything after this line would not run until then. install.sh renders it
+# from shell/login-start.sh.in with the answer baked in, so when the answer is
+# "none" this is a file that returns on its second line. NO_LOGIN_START=1 skips
+# it whatever the answer is.
+#
+# The [ -f ] is what makes the window between `git pull` and the install run
+# harmless: this file is symlinked straight out of the repo, so it is renamed the
+# moment you pull, while login-start.sh only appears when install.sh next
+# renders it. Until then the autostart no-ops -- which is the right way for this
+# particular file to be missing. (It was hsl-login.sh before the answer grew a
+# third value; install.sh unlinks that one on the way past.)
+if [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/login-start.sh" ]; then
+  . "${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/login-start.sh"
 fi
