@@ -34,7 +34,7 @@ panes = {
     "claude":     lambda w: pv.claude(derived, a, w),
     "claude-chat": lambda w: pv.chat(derived, w),
     "herdr":      lambda w: pv.herdr(derived, w),
-    "dassh":      lambda w: pv.dassh(w),
+    "dassh":      lambda w: pv.dassh(derived, w),
     "plan":       lambda w: pv.plan(derived, a, w),
 }
 bad = []

@@ -1,0 +1,62 @@
+#!/bin/bash
+#>> TEMPLATE -- rendered by install.sh with @PRIMARY@ / @DISK_MOUNTPOINT@ /
+#>> @BAR_WIDTH@ / @BAR_COLOR_HEX@ substituted.
+#>> Edit THIS file, not the rendered copy in dotfiles/.generated/. #>> lines are stripped.
+#>>
+#>> A disk-usage pill for the status bar's right half, same shape as the GPU
+#>> pill beside it: the label/cap is @PRIMARY@ like every other pill in this
+#>> bar (host, GPU, slurm), and only the bar fill takes the configurable
+#>> BAR_COLOR_HEX/BAR_WIDTH -- the same answer the GPU pill's own two bars
+#>> take theirs from, so recolouring or resizing one moves both.
+
+MOUNTPOINT="@DISK_MOUNTPOINT@"
+
+# Not there any more -- an unmounted drive, or a path that made sense on a
+# different machine this same config is installed on: disappear cleanly, the
+# same rule the GPU pill follows on a machine with no nvidia-smi. The same
+# config is installed everywhere, so the segment has to vanish rather than
+# show an error or an empty bar.
+[ -d "$MOUNTPOINT" ] || exit 0
+
+BAR_WIDTH=@BAR_WIDTH@
+FILL_CHAR="▰"
+EMPTY_CHAR="▱"
+
+# Total/used/capacity off ONE df call. `-k` is 1024-byte blocks on both GNU
+# and BSD df, and `-P` is one line per filesystem on both too (it exists to
+# stop a long device name from wrapping the line), so the field positions
+# ($2 total, $3 used, $5 capacity) hold on Linux and macOS alike -- no
+# platform branch needed, unlike some of the other helpers in this repo.
+read -r TOTAL_KB USED_KB PCT <<<"$(
+  df -Pk "$MOUNTPOINT" 2>/dev/null | awk 'NR==2 { gsub("%", "", $5); print $2, $3, $5 }'
+)"
+[ -n "${PCT:-}" ] || exit 0
+
+# A bar of BAR_WIDTH cells: filled cells in the chosen colour, the rest dim,
+# both on the pill's black background. Identical shape to gpu-status.sh's
+# bar() -- the two are kept as separate copies rather than a shared sourced
+# file, since each pill degrades independently (no nvidia-smi vs no such
+# mountpoint) and neither should be able to break the other.
+bar() {
+  local pct="$1" filled i out=""
+  [ "$pct" -lt 0 ] && pct=0
+  [ "$pct" -gt 100 ] && pct=100
+  filled=$(( (pct * BAR_WIDTH + 50) / 100 ))
+  out="#[fg=@BAR_COLOR_HEX@,bg=#000000]"
+  for (( i = 0; i < BAR_WIDTH; i++ )); do
+    [ "$i" -eq "$filled" ] && out+="#[fg=#555555,bg=#000000]"
+    out+=$([ "$i" -lt "$filled" ] && echo "$FILL_CHAR" || echo "$EMPTY_CHAR")
+  done
+  printf '%s#[fg=@BAR_COLOR_HEX@,bg=#000000]' "$out"
+}
+
+# GiB with one decimal below 10, none above -- keeps the pill a stable width,
+# same convention as gpu-status.sh's gib(). The input here is KiB (df -k),
+# not gpu-status.sh's MiB, hence the extra /1024.
+gib() {
+  awk -v k="$1" 'BEGIN { g = k / 1024 / 1024; printf (g < 10 ? "%.1f" : "%.0f"), g }'
+}
+
+printf '#[fg=#000000,bg=@PRIMARY@]#[fg=@PRIMARY@,bg=#000000] DISK '
+bar "$PCT"
+printf ' %3d%%  %s/%sG ' "$PCT" "$(gib "$USED_KB")" "$(gib "$TOTAL_KB")"

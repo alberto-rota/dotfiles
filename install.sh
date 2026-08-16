@@ -224,8 +224,17 @@ MACHINE="$(default_machine)"
 SHOW_HOST=1
 SHOW_GPU=1
 SHOW_TEMP=1
+SHOW_DISK=1
 SHOW_SLURM=1
 SHOW_DATETIME=1
+
+# The disk pill's own mountpoint, and the width/colour the GPU pill's two bars
+# and the disk pill's one all share -- see valid_mountpoint()/valid_bar_width()
+# in lib/derive.sh. 8 cells and the primary accent reproduce this repo's own
+# GPU pill exactly as it looked before either answer existed.
+DISK_MOUNTPOINT="/"
+BAR_WIDTH=8
+BAR_COLOR=primary
 
 # What the shell rc opens at login: "herdr" (through hsl, so it gets the status
 # line), "dasshboard" (the ssh/local home screen), or "none". OFF by default, and
@@ -255,6 +264,13 @@ LOGIN_START=""
 # those are read as a row and one of them running the other way would make them
 # disagree about which accent comes first. Nor the prompt.
 CLAUDE_SWAP=0
+
+# Same idea, for dasshboard's own two colours ("primary" and "accent" in its
+# config -- see the dasshboard_patch_theme() block below). Off by default for
+# the same reason: "the two accents mean the same thing everywhere" is the sane
+# starting point, and this machine's primary is what dasshboard's chrome takes
+# unless told otherwise.
+DASSH_SWAP=0
 
 # oh-my-posh accent placement: every accented part of the prompt names its own
 # colour -- primary, secondary or neutral (#d6deeb, the theme's own text colour,
@@ -780,6 +796,28 @@ ask_machine() {
   done
 }
 
+ask_disk_mountpoint() {
+  local answer
+  while true; do
+    printf '    mountpoint [%s]: ' "$DISK_MOUNTPOINT"
+    read -r -u "$TTY_FD" answer || answer=""
+    [ -z "$answer" ] && return
+    if valid_mountpoint "$answer"; then DISK_MOUNTPOINT="$answer"; return; fi
+    printf '    \033[31mAn absolute path, [A-Za-z0-9._/-] only.\033[0m\n'
+  done
+}
+
+ask_bar_width() {
+  local answer
+  while true; do
+    printf '  length, in cells [%s]: ' "$BAR_WIDTH"
+    read -r -u "$TTY_FD" answer || answer=""
+    [ -z "$answer" ] && return
+    if valid_bar_width "$answer"; then BAR_WIDTH="$answer"; return; fi
+    printf '  \033[31mA whole number from 1 to 20.\033[0m\n'
+  done
+}
+
 ask_bool() {
   local var="$1" label="$2" hint answer
   # Split from the declaration above, same reason as ask_color(): inside a
@@ -839,11 +877,18 @@ ask_components() {
   else
     SHOW_TEMP=0
   fi
+  ask_bool SHOW_DISK     "  disk usage pill"
+  [ "$SHOW_DISK" = 1 ] && ask_disk_mountpoint
   ask_bool SHOW_SLURM    "  Slurm job pill"
   ask_bool SHOW_DATETIME "  date / time pill"
 
+  section "Progress bars" "GPU + disk pills"
+  ask_bar_width
+  ask_choice BAR_COLOR   "  colour" primary secondary
+
   section "Shell login" "what opening a terminal opens"
   ask_choice LOGIN_START "  start at login" none herdr dasshboard
+  ask_bool DASSH_SWAP    "  swap dasshboard's primary/accent"
 
   # Kept short for the same reason every prompt here is: these lines are laid
   # out to fit ~38 columns, and ask_bool spends 10 of them on the y/N tail.
@@ -970,7 +1015,7 @@ bar_seg() {
 }
 
 show_preview() {
-  local p s icon_c text_c chev_c pill_c cols rule
+  local p s bar_c icon_c text_c chev_c pill_c cols rule
   # Everything the preview needs is a derived value, so derive them exactly the
   # way the install will -- no second, drifting copy of the colour logic here.
   derive
@@ -983,6 +1028,10 @@ show_preview() {
   [ "$rule" -lt 8 ] && rule=8
   p="$(hex_rgb "$PRIMARY")"
   s="$(hex_rgb "$SECONDARY")"
+  # The GPU/disk pills' bar fill, so this preview shows whichever accent
+  # BAR_COLOR actually names rather than always assuming primary -- the labels
+  # around it stay $p, same as the real scripts.
+  bar_c="$(hex_rgb "$BAR_COLOR_HEX")"
   icon_c="$(hex_rgb "$OMP_ICON_COLOR")"
   text_c="$(hex_rgb "$OMP_TEXT_COLOR")"
   # The panel, no longer the literal 33;34;36 these three printfs used to carry:
@@ -1016,12 +1065,18 @@ show_preview() {
   [ "$SHOW_HOST" = 1 ] && bar_seg $(( ${#MACHINE} + 2 )) \
     '\033[48;2;0;0;0m\033[1m\033[38;2;255;255;255m %s \033[0m' "$MACHINE"
   if [ "$SHOW_GPU" = 1 ]; then
+    # Label in primary (like every pill's cap), the bar itself in whichever
+    # accent BAR_COLOR names, temperature in its own fixed peach -- same three
+    # colours the real script draws, just collapsed into one preview line.
     if [ "$SHOW_TEMP" = 1 ]; then
-      bar_seg 18 '\033[48;2;0;0;0m\033[38;2;%sm GPU ▰▰▱▱ 45%% 62° \033[0m' "$p"
+      bar_seg 18 '\033[48;2;0;0;0m\033[38;2;%sm GPU \033[38;2;%sm▰▰▱▱ 45%%\033[38;2;252;152;103m 62° \033[0m' \
+        "$p" "$bar_c"
     else
-      bar_seg 14 '\033[48;2;0;0;0m\033[38;2;%sm GPU ▰▰▱▱ 45%% \033[0m' "$p"
+      bar_seg 14 '\033[48;2;0;0;0m\033[38;2;%sm GPU \033[38;2;%sm▰▰▱▱ 45%% \033[0m' "$p" "$bar_c"
     fi
   fi
+  [ "$SHOW_DISK" = 1 ] && bar_seg 25 \
+    '\033[48;2;0;0;0m\033[38;2;%sm DISK \033[38;2;%sm▰▰▱▱ 42%%  50/200G \033[0m' "$p" "$bar_c"
   [ "$SHOW_SLURM" = 1 ] && bar_seg 9 \
     '\033[48;2;0;0;0m\033[38;2;%sm  1 job \033[0m' "$p"
   if [ "$SHOW_DATETIME" = 1 ]; then
@@ -1086,9 +1141,10 @@ run_tui() {
   # The UI reads the current answers from the environment, exactly as
   # lib/derive.sh does when the UI shells out to it for its live preview.
   export DOTFILES PRIMARY SECONDARY MACHINE USER_NAME NEUTRAL_FG
-  export SHOW_HOST SHOW_GPU SHOW_TEMP SHOW_SLURM SHOW_DATETIME
+  export SHOW_HOST SHOW_GPU SHOW_TEMP SHOW_DISK SHOW_SLURM SHOW_DATETIME
+  export DISK_MOUNTPOINT BAR_WIDTH BAR_COLOR
   export OMP_ICON_MODE OMP_ICON OMP_TEXT OMP_CHEVRON_OK OMP_CHEVRON_ERROR OMP_PILL_BG
-  export LOGIN_START CLAUDE_SWAP
+  export LOGIN_START CLAUDE_SWAP DASSH_SWAP
   # Every TOOL_<ID>, so the UI's checkboxes open on this machine's saved answers
   # and its install-plan pane resolves against them.
   tools_export
@@ -1151,7 +1207,9 @@ derive
 echo "  primary   $PRIMARY  (herdr sidebar rail $PRIMARY_DIM)"
 echo "  secondary $SECONDARY"
 echo "  machine   $MACHINE"
-echo "  status    host=$SHOW_HOST gpu=$SHOW_GPU temp=$SHOW_TEMP slurm=$SHOW_SLURM datetime=$SHOW_DATETIME"
+echo "  status    host=$SHOW_HOST gpu=$SHOW_GPU temp=$SHOW_TEMP disk=$SHOW_DISK slurm=$SHOW_SLURM datetime=$SHOW_DATETIME"
+[ "$SHOW_DISK" = 1 ] && echo "  disk      mountpoint=$DISK_MOUNTPOINT"
+echo "  bars      width=$BAR_WIDTH colour=$BAR_COLOR"
 echo "  omp       glyph=$OMP_ICON_MODE/$OMP_ICON text=$OMP_TEXT chevrons=$OMP_CHEVRON_OK,$OMP_CHEVRON_ERROR"
 SHELLS_DESC=""
 [ "$WIRE_BASH" -eq 1 ] && SHELLS_DESC="~/.bashrc"
@@ -1193,8 +1251,12 @@ MACHINE="$MACHINE"
 SHOW_HOST=$SHOW_HOST
 SHOW_GPU=$SHOW_GPU
 SHOW_TEMP=$SHOW_TEMP
+SHOW_DISK=$SHOW_DISK
+DISK_MOUNTPOINT="$DISK_MOUNTPOINT"
 SHOW_SLURM=$SHOW_SLURM
 SHOW_DATETIME=$SHOW_DATETIME
+BAR_WIDTH=$BAR_WIDTH
+BAR_COLOR=$BAR_COLOR
 OMP_ICON_MODE=$OMP_ICON_MODE
 OMP_ICON=$OMP_ICON
 OMP_TEXT=$OMP_TEXT
@@ -1203,6 +1265,7 @@ OMP_CHEVRON_ERROR=$OMP_CHEVRON_ERROR
 OMP_PILL_BG="$OMP_PILL_BG"
 LOGIN_START=$LOGIN_START
 CLAUDE_SWAP=$CLAUDE_SWAP
+DASSH_SWAP=$DASSH_SWAP
 EOF
 # One TOOL_<ID>=0|1 per catalogue entry, appended rather than spelled out in the
 # heredoc above so adding a tool needs no edit here. A tool that is not in the
@@ -1409,6 +1472,9 @@ render() {
         -e "s|@MACHINE@|$MACHINE|g" \
         -e "s|@HERDR_CONFIG@|$HERDR_CONFIG|g" \
         -e "s|@SHOW_TEMP@|$SHOW_TEMP|g" \
+        -e "s|@DISK_MOUNTPOINT@|$DISK_MOUNTPOINT|g" \
+        -e "s|@BAR_WIDTH@|$BAR_WIDTH|g" \
+        -e "s|@BAR_COLOR_HEX@|$BAR_COLOR_HEX|g" \
         -e "s|@LOGIN_START@|$LOGIN_START|g" \
         -e "s|@OMP_ICON_COLOR_JOB@|$OMP_ICON_COLOR_JOB|g" \
         -e "s|@OMP_ICON_COLOR@|$OMP_ICON_COLOR|g" \
@@ -1466,6 +1532,100 @@ render_script() {
   chmod +x "$out"
 }
 
+# --- dasshboard's theme, patched in place rather than render()+link()'d -------
+# Every other templated file above is OURS whole: we render it and symlink the
+# real path at our copy, backing up whatever real file was there first. That is
+# the wrong shape for dasshboard's config.toml, which dasshboard itself writes
+# continuously (tiles, hosts, sections, from its own `s` settings panel) --
+# symlinking it at a rendered copy would mean either dasshboard's own writes
+# land in gitignored .generated/ and vanish on the next render, or a full
+# render()+link() clobbers the user's board on every install run. So this
+# patches just the two keys of its [theme] table, in place, and leaves every
+# other line in the file exactly as dasshboard left it.
+#
+# `dasshboard --config` is asked for the real path the same way the setup UI's
+# preview used to (before it started reading these two keys off the derived
+# answer like everything else) -- it is dasshboard's own answer, and costs
+# nothing since this runs once per install. Falls back to the XDG default when
+# dasshboard is not yet on PATH, which is normal: this can run before the tools
+# phase has put it there, the same way herdr's and tmux's config are rendered
+# whether or not the binary exists yet.
+dasshboard_config_path() {
+  if command -v dasshboard >/dev/null 2>&1; then
+    local said
+    said="$(dasshboard --config 2>/dev/null || true)"
+    if [ -n "$said" ]; then printf '%s' "$said"; return 0; fi
+  fi
+  printf '%s' "${XDG_CONFIG}/dasshboard/config.toml"
+}
+
+# dasshboard_patch_theme FILE PRIMARY ACCENT
+#
+# A one-time backup (never a numbered one -- this is not a takeover, so there is
+# nothing to protect against beyond the very first edit) precedes the very first
+# patch of a config that already existed, the same courtesy link()/copy() give
+# every real file they take over. It is NOT added to MANAGED: this file is not
+# ours to remove or restore wholesale (that would be reset.sh deleting the
+# user's entire board), only these two keys are.
+#
+# The awk pass mirrors tui/configure.py's own scan of this same table (matching
+# `[theme]` with spaces stripped, so `[ theme ]` still counts): replace primary/
+# accent wherever the table already has them, insert whichever is missing right
+# where the table ends, and append a whole new [theme] table at end-of-file if
+# there was none. A missing file gets the minimal table directly, no awk needed
+# -- dasshboard is per-slot forgiving about a config missing everything else.
+dasshboard_patch_theme() {
+  local file="$1" primary="$2" accent="$3" tmp
+  mkdir -p "$(dirname "$file")"
+  if [ ! -e "$file" ]; then
+    printf '[theme]\nprimary = "%s"\naccent = "%s"\n' "$primary" "$accent" > "$file"
+    echo "Wrote $file (dasshboard has no config here yet)"
+    return 0
+  fi
+  if [ ! -e "$file.bak" ]; then
+    cp -f "$file" "$file.bak"
+    echo "Backed up existing $file -> $file.bak"
+  fi
+  tmp="$(mktemp "${TMPDIR:-/tmp}/dotfiles-dassh.XXXXXX")"
+  awk -v p="$primary" -v a="$accent" '
+    function is_theme_header(l) { gsub(/ /, "", l); return l == "[theme]" }
+    BEGIN { in_theme = 0; have_theme = 0; seen_p = 0; seen_a = 0 }
+    /^[ \t]*\[/ {
+      if (in_theme) {
+        if (!seen_p) print "primary = \"" p "\""
+        if (!seen_a) print "accent = \"" a "\""
+      }
+      in_theme = is_theme_header($0)
+      if (in_theme) have_theme = 1
+      print
+      next
+    }
+    {
+      if (in_theme) {
+        line = $0
+        gsub(/^[ \t]+/, "", line)
+        if (line ~ /^primary[ \t]*=/) { print "primary = \"" p "\""; seen_p = 1; next }
+        if (line ~ /^accent[ \t]*=/)  { print "accent = \"" a "\"";  seen_a = 1; next }
+      }
+      print
+    }
+    END {
+      if (in_theme && (!seen_p || !seen_a)) {
+        if (!seen_p) print "primary = \"" p "\""
+        if (!seen_a) print "accent = \"" a "\""
+      }
+      if (!have_theme) {
+        print "[theme]"
+        print "primary = \"" p "\""
+        print "accent = \"" a "\""
+      }
+    }
+  ' "$file" > "$tmp"
+  cat "$tmp" > "$file"
+  rm -f "$tmp"
+  echo "Set dasshboard's theme colours in $file"
+}
+
 # Renders overwrite in place rather than wiping .generated/ first, so a failure
 # part-way through can never leave the live symlinks dangling. Anything stale (a
 # template that got renamed) is pruned at the very end, once every link is set.
@@ -1476,15 +1636,19 @@ render_script tmux/other-sessions.sh.in tmux/other-sessions.sh
 render_script tmux/slurm-status.sh.in   tmux/slurm-status.sh
 # The GPU pill needs @SHOW_TEMP@, which no other tmux template does, but it is
 # otherwise an ordinary status helper and lives with the rest of them. Both
-# bars -- tmux's and hsl's -- call these three scripts at these paths, so there
+# bars -- tmux's and hsl's -- call these four scripts at these paths, so there
 # is exactly one rendered copy of each and the two cannot show different
-# readings. gpu-status.sh no-ops on a machine with no nvidia-smi, so linking it
-# unconditionally is harmless even with SHOW_GPU=0, which simply never calls it.
+# readings. gpu-status.sh no-ops on a machine with no nvidia-smi and
+# disk-status.sh no-ops on one with no such mountpoint, so linking either
+# unconditionally is harmless even with SHOW_GPU=0/SHOW_DISK=0, which simply
+# never call them.
 render_script tmux/gpu-status.sh.in     tmux/gpu-status.sh
+render_script tmux/disk-status.sh.in    tmux/disk-status.sh
 link "$GENERATED/tmux/.tmux.conf"        "$HOME/.tmux.conf"
 link "$GENERATED/tmux/other-sessions.sh" "$HOME/.tmux/other-sessions.sh"
 link "$GENERATED/tmux/slurm-status.sh"   "$HOME/.tmux/slurm-status.sh"
 link "$GENERATED/tmux/gpu-status.sh"     "$HOME/.tmux/gpu-status.sh"
+link "$GENERATED/tmux/disk-status.sh"    "$HOME/.tmux/disk-status.sh"
 
 # --- claude ---
 link "$DOTFILES/claude/settings.json"        "$HOME/.claude/settings.json"
@@ -1565,6 +1729,13 @@ if command -v herdr >/dev/null 2>&1; then
     echo "NOTE: could not link herdr-workspace-prefix (is the herdr server running?)"
   fi
 fi
+
+# --- dasshboard ---
+# Not render()+link(): see the dasshboard_patch_theme() comment above. Runs
+# whether or not dasshboard is installed or selected in the tools list, same
+# reasoning as herdr's and tmux's config -- a machine can get dasshboard's
+# colours right before it ever gets the binary.
+dasshboard_patch_theme "$(dasshboard_config_path)" "$DASSH_PRIMARY" "$DASSH_ACCENT"
 
 # --- oh-my-posh ---
 render oh-my-posh/albe-monokai2.omp.json.in oh-my-posh/albe-monokai2.omp.json

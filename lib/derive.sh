@@ -10,9 +10,10 @@
 #
 # Reads (all optional, defaults below):
 #   PRIMARY SECONDARY MACHINE USER_NAME NEUTRAL_FG
-#   SHOW_HOST SHOW_GPU SHOW_TEMP SHOW_SLURM SHOW_DATETIME
+#   SHOW_HOST SHOW_GPU SHOW_TEMP SHOW_DISK DISK_MOUNTPOINT SHOW_SLURM SHOW_DATETIME
+#   BAR_WIDTH BAR_COLOR
 #   OMP_ICON_MODE OMP_ICON OMP_TEXT OMP_CHEVRON_OK OMP_CHEVRON_ERROR
-#   CLAUDE_SWAP LOGIN_START
+#   CLAUDE_SWAP DASSH_SWAP LOGIN_START
 #   (and the superseded OMP_COLOR_ICON / OMP_COLOR_TEXT / OMP_COLOR_CHEVRON and
 #    HSL_LOGIN, which are migrated to the above when the new answers are absent)
 # Sets:
@@ -20,10 +21,12 @@
 #   OMP_ICON_COLOR OMP_ICON_COLOR_JOB OMP_TEXT_COLOR OMP_CHEVRON_FG OMP_CHEVRON_ERR
 #   OMP_PATH_COLOR OMP_TIME_COLOR OMP_PY_COLOR
 #   OMP_GIT_CLEAN OMP_GIT_BEHIND OMP_GIT_AHEAD OMP_GIT_DIVERGED OMP_GIT_DIRTY
+#   BAR_COLOR_HEX
 #   CLAUDE_MODEL_RGB CLAUDE_EFFORT_RGB CLAUDE_USAGE_RGB CLAUDE_WEEK_RGB CLAUDE_CTX_RGB
 #   CLAUDE_PRIMARY CLAUDE_SECONDARY CLAUDE_PRIMARY_SHIMMER CLAUDE_SECONDARY_SHIMMER
 #   CLAUDE_MSG_BG CLAUDE_MSG_BG_HOVER CLAUDE_MEMORY_BG CLAUDE_SELECTION_BG
 #   CLAUDE_TRACK_BG CLAUDE_BASH_BG
+#   DASSH_PRIMARY DASSH_ACCENT
 #   TMUX_STATUS_LEFT TMUX_STATUS_RIGHT HSL_STATUS_LEFT HSL_STATUS_RIGHT
 
 # --- the palette offered by both front-ends -------------------------------------
@@ -114,6 +117,14 @@ valid_hex() { [[ "$1" =~ ^#[0-9a-fA-F]{6}$ ]]; }
 # Machine name is substituted into sed replacements and into JSON/tmux strings,
 # so keep it to characters that are safe in all three.
 valid_machine() { [[ "$1" =~ ^[A-Za-z0-9._-]{1,24}$ ]]; }
+# The disk pill's mountpoint: an absolute path, substituted the same three
+# places the machine name is, so the same conservative character set applies --
+# plus "/", which a path obviously needs. Bounded to 48 characters, matching
+# the UI's Input(max_length=48).
+valid_mountpoint() { [[ "$1" =~ ^/[A-Za-z0-9._/-]{0,47}$ ]]; }
+# The progress bars' width, in cells. Bounded well short of anything that could
+# blow a pill past the space a status bar actually has.
+valid_bar_width() { [[ "$1" =~ ^[0-9]{1,2}$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 20 ]; }
 
 hex_rgb() { local h="${1#\#}"; printf '%d;%d;%d' "0x${h:0:2}" "0x${h:2:2}" "0x${h:4:2}"; }
 
@@ -380,6 +391,24 @@ derive() {
     *) LOGIN_START=none ;;
   esac
 
+  # --- the progress bars' own answers --------------------------------------------
+  # Shared by the GPU pill's two bars and the disk pill's one: which of the two
+  # accents fills them, and how many cells wide they are. Same "fall back rather
+  # than abort" rule as LOGIN_START above -- a typo in a hand-edited theme.env
+  # must cost you a bar's width or colour, never the install.
+  BAR_COLOR="${BAR_COLOR:-primary}"
+  case "$BAR_COLOR" in
+    primary|secondary) ;;
+    *) BAR_COLOR=primary ;;
+  esac
+  BAR_COLOR_HEX="$(accent_hex "$BAR_COLOR")"
+
+  BAR_WIDTH="${BAR_WIDTH:-8}"
+  valid_bar_width "$BAR_WIDTH" || BAR_WIDTH=8
+
+  DISK_MOUNTPOINT="${DISK_MOUNTPOINT:-/}"
+  valid_mountpoint "$DISK_MOUNTPOINT" || DISK_MOUNTPOINT=/
+
   # --- oh-my-posh accent placement ----------------------------------------------
   # Every accented part of the prompt names its own colour (primary, secondary
   # or neutral); this resolves each to a hex value, baked in here rather than
@@ -473,6 +502,23 @@ derive() {
     CLAUDE_PRIMARY="$PRIMARY";   CLAUDE_SECONDARY="$SECONDARY"
   fi
 
+  # dasshboard's own two colours. Its config calls them "primary" and "accent",
+  # and install.sh now writes this machine's answer straight into them --
+  # patching just those two keys of its [theme] table in place rather than
+  # rendering the whole file, since the rest of it (tiles, hosts, sections) is
+  # dasshboard's own persistent state, not ours to own. DASSH_SWAP turns them
+  # round the same way CLAUDE_SWAP does for Claude Code's UI and for the same
+  # reason: dasshboard's "primary" paints the chrome you read all the time
+  # (the wordmark, section titles, hairlines) while "accent" only highlights
+  # the selected tile, so which of the two reads best in each role is not
+  # always the one this machine calls primary.
+  DASSH_SWAP="${DASSH_SWAP:-0}"
+  if [ "$DASSH_SWAP" = 1 ]; then
+    DASSH_PRIMARY="$SECONDARY"; DASSH_ACCENT="$PRIMARY"
+  else
+    DASSH_PRIMARY="$PRIMARY";   DASSH_ACCENT="$SECONDARY"
+  fi
+
   # --- status line assembly -------------------------------------------------------
   # tmux's status bar and hsl's (bin/hsl, the herdr wrapper) are meant to look
   # identical (see CLAUDE.md), so both are assembled here from the same
@@ -499,6 +545,7 @@ derive() {
   # spot correctly, since its layout differs slightly.
   TMUX_STATUS_RIGHT="#[fg=$PRIMARY,bg=#000000]${SEP}#[fg=#ffffff,bg=#00000t0] "
   [ "${SHOW_GPU:-1}" = 1 ]   && TMUX_STATUS_RIGHT+='#(~/.tmux/gpu-status.sh)'
+  [ "${SHOW_DISK:-1}" = 1 ]  && TMUX_STATUS_RIGHT+='#(~/.tmux/disk-status.sh)'
   [ "${SHOW_SLURM:-1}" = 1 ] && TMUX_STATUS_RIGHT+='#(~/.tmux/slurm-status.sh)'
   TMUX_STATUS_RIGHT+="#[fg=#000000,bg=$PRIMARY]${SEP}"
   if [ "${SHOW_DATETIME:-1}" = 1 ]; then
@@ -519,6 +566,7 @@ derive() {
   # fewer way for them to drift, and one fewer copy of each script to link.
   HSL_STATUS_RIGHT="#[fg=$PRIMARY,bg=#000000]${SEP}#[fg=#ffffff,bg=#000000] "
   [ "${SHOW_GPU:-1}" = 1 ]   && HSL_STATUS_RIGHT+='#(~/.tmux/gpu-status.sh)'
+  [ "${SHOW_DISK:-1}" = 1 ]  && HSL_STATUS_RIGHT+='#(~/.tmux/disk-status.sh)'
   [ "${SHOW_SLURM:-1}" = 1 ] && HSL_STATUS_RIGHT+='#(~/.tmux/slurm-status.sh)'
   HSL_STATUS_RIGHT+="#[fg=#000000,bg=$PRIMARY]${SEP}"
   if [ "${SHOW_DATETIME:-1}" = 1 ]; then
@@ -549,11 +597,13 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
            OMP_ICON_COLOR OMP_ICON_COLOR_JOB OMP_TEXT_COLOR OMP_CHEVRON_FG OMP_CHEVRON_ERR \
            OMP_PATH_COLOR OMP_TIME_COLOR OMP_PY_COLOR \
            OMP_GIT_CLEAN OMP_GIT_BEHIND OMP_GIT_AHEAD OMP_GIT_DIVERGED OMP_GIT_DIRTY \
+           BAR_COLOR_HEX \
            CLAUDE_MODEL_RGB CLAUDE_EFFORT_RGB CLAUDE_USAGE_RGB CLAUDE_WEEK_RGB CLAUDE_CTX_RGB \
            CLAUDE_PRIMARY CLAUDE_SECONDARY \
            CLAUDE_PRIMARY_SHIMMER CLAUDE_SECONDARY_SHIMMER \
            CLAUDE_MSG_BG CLAUDE_MSG_BG_HOVER CLAUDE_MEMORY_BG \
            CLAUDE_SELECTION_BG CLAUDE_TRACK_BG CLAUDE_BASH_BG \
+           DASSH_PRIMARY DASSH_ACCENT \
            TMUX_STATUS_LEFT TMUX_STATUS_RIGHT HSL_STATUS_LEFT HSL_STATUS_RIGHT; do
     printf '%s=%s\n' "$v" "${!v}"
   done

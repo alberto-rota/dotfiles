@@ -1,5 +1,6 @@
 #!/bin/bash
-#>> TEMPLATE -- rendered by install.sh with @PRIMARY@ / @SHOW_TEMP@ substituted.
+#>> TEMPLATE -- rendered by install.sh with @PRIMARY@ / @SHOW_TEMP@ / @BAR_WIDTH@ /
+#>> @BAR_COLOR_HEX@ substituted.
 #>> Edit THIS file, not the rendered copy in dotfiles/.generated/. #>> lines are stripped.
 #>>
 #>> A GPU pill for the status bar's right half: utilisation and occupied memory,
@@ -15,7 +16,9 @@ command -v nvidia-smi >/dev/null 2>&1 || exit 0
 # always shows utilisation/memory, this only gates the temperature reading.
 SHOW_TEMP=@SHOW_TEMP@
 
-BAR_WIDTH=8
+# Shared with the disk pill beside it, so recolouring or resizing one moves
+# the other with it -- see the BAR_WIDTH/BAR_COLOR answers in install.sh.
+BAR_WIDTH=@BAR_WIDTH@
 FILL_CHAR="▰"
 EMPTY_CHAR="▱"
 # The temperature reading's capsule icon -- the bars below are now a plain run
@@ -65,12 +68,12 @@ bar() {
   [ "$pct" -lt 0 ] && pct=0
   [ "$pct" -gt 100 ] && pct=100
   filled=$(( (pct * BAR_WIDTH + 50) / 100 ))
-  out="#[fg=@PRIMARY@,bg=#000000]"
+  out="#[fg=@BAR_COLOR_HEX@,bg=#000000]"
   for (( i = 0; i < BAR_WIDTH; i++ )); do
     [ "$i" -eq "$filled" ] && out+="#[fg=#555555,bg=#000000]"
     out+=$([ "$i" -lt "$filled" ] && echo "$FILL_CHAR" || echo "$EMPTY_CHAR")
   done
-  printf '%s#[fg=@PRIMARY@,bg=#000000]' "$out"
+  printf '%s#[fg=@BAR_COLOR_HEX@,bg=#000000]' "$out"
 }
 
 # GiB with one decimal below 10, none above -- keeps the pill a stable width.
@@ -88,5 +91,5 @@ bar "$MEM_PCT"
 printf ' %s/%sG ' "$(gib "$USED")" "$(gib "$TOTAL")"
 # The rounded caps, printed back to back as a small capsule icon in front of the
 # reading -- in peach, so both the icon and the temperature it marks stand out
-# from the primary-coloured util/mem figures.
+# from the bar-coloured util/mem figures, whichever accent that is.
 [ "$SHOW_TEMP" = 1 ] && [ "${TEMP:--1}" -ge 0 ] && printf '#[fg=#fc9867,bg=#000000]%s%s %d° ' "$CAP_LEFT" "$CAP_RIGHT" "$TEMP"

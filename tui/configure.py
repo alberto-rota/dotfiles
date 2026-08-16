@@ -37,11 +37,11 @@ What makes the previews trustworthy rather than a drawing of what the config is
     own UI. Their colours are still real, read from whatever file actually sets
     them -- herdr's accent and the darkened surface_dim behind its selected row,
     for Claude Code every value that claude/themes/accent.json.in substitutes
-    (read under the same key), and for dasshboard the primary/accent pair out of
-    ITS config, since this repo deliberately does not set those. So a drawn pane
-    can be laid out wrongly, but it cannot show a colour the installed config
-    does not have -- and the dasshboard one, alone in the window, does not move
-    when an accent does, because nothing typed here reaches it.
+    (read under the same key), and for dasshboard the primary/accent pair this
+    repo now writes into its own [theme] table (patched in place by install.sh's
+    dasshboard_patch_theme(), not rendered whole -- the rest of that file is
+    dasshboard's own persistent state). So a drawn pane can be laid out wrongly,
+    but it cannot show a colour the installed config does not have.
 """
 
 from __future__ import annotations
@@ -75,6 +75,11 @@ TOOLS = DOTFILES / "lib" / "tools.sh"
 HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 BARE_HEX_RE = re.compile(r"^[0-9a-fA-F]{6}$")
 MACHINE_RE = re.compile(r"^[A-Za-z0-9._-]{1,24}$")
+# The disk pill's mountpoint -- same character set lib/derive.sh's
+# valid_mountpoint() accepts, kept in step with it. Bounded to 48 characters,
+# matching the UI's Input(max_length=48).
+MOUNTPOINT_RE = re.compile(r"^/[A-Za-z0-9._/-]{0,47}$")
+BAR_WIDTH_MIN, BAR_WIDTH_MAX = 1, 20  # mirrors lib/derive.sh's valid_bar_width()
 # Only for painting the "neutral" choice in the UI; lib/derive.sh owns the value
 # that actually gets rendered (and honours $NEUTRAL_FG if it is set).
 NEUTRAL_FG = os.environ.get("NEUTRAL_FG", "#d6deeb")
@@ -88,6 +93,7 @@ S_SENTINEL = "<<SECONDARY>>"
 
 HELPER_TEMPLATES = {
     "gpu-status.sh": "tmux/gpu-status.sh.in",
+    "disk-status.sh": "tmux/disk-status.sh.in",
     "slurm-status.sh": "tmux/slurm-status.sh.in",
     "other-sessions.sh": "tmux/other-sessions.sh.in",
 }
@@ -119,6 +125,11 @@ CLAUDE_SAMPLE = {
 # glyph's mode may be. Both mirror lib/derive.sh, which resolves them to hex.
 ACCENT_CHOICES = ("primary", "secondary", "neutral")
 ICON_MODES = ("fixed", "slurm")
+# The GPU/disk pills' bar fill: two-way rather than ACCENT_CHOICES' three,
+# since "neutral" (the theme's plain text colour) has no place filling a
+# progress bar the way it does painting a chevron. _sync_choices() below
+# checks for this tuple by identity too, so its row gets the same swatches.
+BAR_COLOR_CHOICES = ACCENT_CHOICES[:2]
 # What opening a terminal opens. "none" first, because it is the default and the
 # one answer here that can cost somebody a shell on a machine they only reach
 # over ssh -- so cycling the row starts from the harmless end.
@@ -198,8 +209,18 @@ class Answers:
     show_host: bool = True
     show_gpu: bool = True
     show_temp: bool = True
+    show_disk: bool = True
+    # An absolute path, validated the same way the machine name is: it is
+    # substituted into a rendered shell script, so keep it to a safe set.
+    disk_mountpoint: str = "/"
     show_slurm: bool = True
     show_datetime: bool = True
+    # The GPU pill's two bars and the disk pill's one, shared: which accent
+    # fills them and how many cells wide they are. 8 and primary reproduce
+    # this repo's own GPU pill exactly as it looked before either answer
+    # existed.
+    bar_width: int = 8
+    bar_color: str = "primary"
     # oh-my-posh, per component: which of the two accents (or neither) paints it.
     omp_icon_mode: str = "fixed"
     omp_icon: str = "secondary"
@@ -226,6 +247,11 @@ class Answers:
     # status line bubbles, the shimmers and the message tints -- never the
     # prompt or either status bar).
     claude_swap: bool = False
+    # Same idea for dasshboard's own "primary"/"accent" pair (see the
+    # DASSH_SWAP block in lib/derive.sh) -- install.sh now patches those two
+    # keys of its [theme] table directly, so this is the one control that
+    # decides which of this machine's two accents lands in which role there.
+    dassh_swap: bool = False
     # The tools, held as "everything in the catalogue" plus "the ones switched
     # off" rather than as one field per tool: the catalogue is lib/tools.sh's to
     # define, and a dataclass field per entry would mean editing this file every
@@ -253,11 +279,19 @@ class Answers:
             value = env.get(name, "").strip().lower()
             return value if value in allowed else default
 
+        def bounded_int(name: str, default: int, lo: int, hi: int) -> int:
+            try:
+                value = int(env.get(name, "").strip())
+            except ValueError:
+                return default
+            return value if lo <= value <= hi else default
+
         d = cls()
         primary = env.get("PRIMARY", d.primary)
         secondary = env.get("SECONDARY", d.secondary)
         pill_bg = env.get("OMP_PILL_BG", d.omp_pill_bg)
         machine = env.get("MACHINE", "") or _hostname()
+        mountpoint = env.get("DISK_MOUNTPOINT", "").strip() or d.disk_mountpoint
         # Answers saved before per-component colours existed still describe a
         # look; lib/derive.sh migrates them, and so does this, so opening the UI
         # on an already-set-up machine shows what that machine currently has.
@@ -287,10 +321,15 @@ class Answers:
             show_host=flag("SHOW_HOST", d.show_host),
             show_gpu=flag("SHOW_GPU", d.show_gpu),
             show_temp=flag("SHOW_TEMP", d.show_temp),
+            show_disk=flag("SHOW_DISK", d.show_disk),
+            disk_mountpoint=mountpoint if MOUNTPOINT_RE.match(mountpoint) else d.disk_mountpoint,
             show_slurm=flag("SHOW_SLURM", d.show_slurm),
             show_datetime=flag("SHOW_DATETIME", d.show_datetime),
+            bar_width=bounded_int("BAR_WIDTH", d.bar_width, BAR_WIDTH_MIN, BAR_WIDTH_MAX),
+            bar_color=choice("BAR_COLOR", d.bar_color, BAR_COLOR_CHOICES),
             login_start=choice("LOGIN_START", legacy_login, LOGIN_STARTS),
             claude_swap=flag("CLAUDE_SWAP", d.claude_swap),
+            dassh_swap=flag("DASSH_SWAP", d.dassh_swap),
             omp_icon_mode=choice("OMP_ICON_MODE", d.omp_icon_mode, ICON_MODES),
             omp_icon=choice("OMP_ICON", legacy_icon),
             omp_text=choice("OMP_TEXT", legacy_text),
@@ -312,10 +351,15 @@ class Answers:
             "SHOW_HOST": _b(self.show_host),
             "SHOW_GPU": _b(self.show_gpu),
             "SHOW_TEMP": _b(temp),
+            "SHOW_DISK": _b(self.show_disk),
+            "DISK_MOUNTPOINT": self.disk_mountpoint,
             "SHOW_SLURM": _b(self.show_slurm),
             "SHOW_DATETIME": _b(self.show_datetime),
+            "BAR_WIDTH": str(self.bar_width),
+            "BAR_COLOR": self.bar_color,
             "LOGIN_START": self.login_start,
             "CLAUDE_SWAP": _b(self.claude_swap),
+            "DASSH_SWAP": _b(self.dassh_swap),
             "OMP_ICON_MODE": self.omp_icon_mode,
             "OMP_ICON": self.omp_icon,
             "OMP_TEXT": self.omp_text,
@@ -329,7 +373,7 @@ class Answers:
 
     def as_shell(self) -> str:
         env = self.as_env()
-        quoted = {"PRIMARY", "SECONDARY", "MACHINE", "OMP_PILL_BG"}  # validated
+        quoted = {"PRIMARY", "SECONDARY", "MACHINE", "OMP_PILL_BG", "DISK_MOUNTPOINT"}  # validated
         lines = [
             "# Written by dotfiles/tui/configure.py, sourced by install.sh.",
             *(f'{k}="{v}"' if k in quoted else f"{k}={v}" for k, v in env.items()),
@@ -427,6 +471,9 @@ def placeholders(derived: dict[str, str], answers: Answers) -> dict[str, str]:
         "USER": derived["USER_NAME"],
         "HERDR_CONFIG": f"{xdg}/herdr",
         "SHOW_TEMP": env["SHOW_TEMP"],
+        "DISK_MOUNTPOINT": env["DISK_MOUNTPOINT"],
+        "BAR_WIDTH": env["BAR_WIDTH"],
+        "BAR_COLOR_HEX": derived["BAR_COLOR_HEX"],
         "LOGIN_START": env["LOGIN_START"],
         "OMP_ICON_COLOR": derived["OMP_ICON_COLOR"],
         "OMP_ICON_COLOR_JOB": derived["OMP_ICON_COLOR_JOB"],
@@ -648,22 +695,21 @@ def compose_bar(left: Text, right: Text, width: int, bg: str) -> Text:
 
 
 # ---------------------------------------------------------------------------
-# dasshboard's colours, which are dasshboard's own
+# dasshboard's colours -- this repo's now, like everything else in the window
 # ---------------------------------------------------------------------------
 # dasshboard derives its whole interface from a primary and an accent, the same
-# shape as this repo's two answers -- but those two live in ITS config, and this
-# repo deliberately does not set them: the file is one dasshboard writes itself
-# from its `s` settings panel, so owning it would mean overwriting a colour the
-# user set there on every install run.
+# shape as this repo's two answers. install.sh now writes this machine's pair
+# straight into those two keys of dasshboard's [theme] table (patched in place,
+# not rendered whole -- see dasshboard_patch_theme() there, since the rest of
+# that file is dasshboard's own persistent state: tiles, hosts, sections).
 #
-# So the pane reads that pair from dasshboard's config and reproduces the four
-# shades it derives, ratios and all, from src/theme.rs. That is what keeps the
-# drawing honest under the same rule as the herdr and claude-code panes: it can
-# be laid out wrongly, but it cannot show a colour dasshboard would not draw.
-# The visible consequence is that this one pane does NOT repaint as you type an
-# accent -- correctly, because nothing you type here reaches it.
-DASSH_PRIMARY = "#aaaaaa"
-DASSH_ACCENT = "#ff0000"
+# So the pane takes DASSH_PRIMARY/DASSH_ACCENT from `derived`, same as every
+# other pane, and reproduces the four shades dasshboard itself derives from
+# them, ratios and all, from src/theme.rs. The fallbacks below only matter if
+# derive.sh ever returned something unparsable, which validated input never
+# does -- DasshTheme.of() falls back per slot rather than blanking the pane.
+DASSH_PRIMARY_FALLBACK = "#aaaaaa"
+DASSH_ACCENT_FALLBACK = "#ff0000"
 # Its own default host-dot palette, for the sample board shown when dasshboard is
 # not installed and there is no real one to read. Deliberately excludes red --
 # a host owning red would be indistinguishable from the cursor.
@@ -714,8 +760,8 @@ class DasshTheme:
 
     @classmethod
     def of(cls, primary: str, accent: str) -> "DasshTheme":
-        p = _dassh_rgb(primary, DASSH_PRIMARY)
-        a = _dassh_rgb(accent, DASSH_ACCENT)
+        p = _dassh_rgb(primary, DASSH_PRIMARY_FALLBACK)
+        a = _dassh_rgb(accent, DASSH_ACCENT_FALLBACK)
         return cls(
             primary=_dassh_hex(p),
             accent=_dassh_hex(a),
@@ -747,45 +793,6 @@ DASSH_SAMPLE = (
     DasshTile(True, "#6a6f78", "herdr", "workspaces", "hsl", False),
     DasshTile(False, "#c9a227", "zima", "zima", "~", False),
 )
-
-
-def _dassh_theme_from(path: Path) -> DasshTheme:
-    """The `[theme]` pair out of dasshboard's config.
-
-    Scanned rather than parsed with tomllib on purpose: this file is hand-edited,
-    and a syntax error further down it must cost the pane its colours, not raise.
-    dasshboard itself is per-slot forgiving for the same reason.
-    """
-    primary, accent = DASSH_PRIMARY, DASSH_ACCENT
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return DasshTheme.of(primary, accent)
-    in_theme = False
-    for raw in text.splitlines():
-        line = raw.strip()
-        if line.startswith("["):
-            # Only the top-level [theme] table; [[host]] and the rest carry
-            # `color`, which is a tile's identity and not the chrome.
-            in_theme = line.replace(" ", "") == "[theme]"
-            continue
-        if not in_theme or "=" not in line or line.startswith("#"):
-            continue
-        key, _, value = line.partition("=")
-        key = key.strip()
-        if key not in ("primary", "accent"):
-            continue
-        # The quoted string, taken as a whole. It cannot be split on "#" to drop
-        # a trailing TOML comment the way an ordinary value could -- the value
-        # here *starts* with a "#".
-        quoted = re.match(r"""\s*(["'])(.*?)\1""", value)
-        if not quoted:
-            continue
-        if key == "primary":
-            primary = quoted.group(2).strip()
-        else:
-            accent = quoted.group(2).strip()
-    return DasshTheme.of(primary, accent)
 
 
 def _dassh_tiles_from(output: str) -> list[DasshTile]:
@@ -830,36 +837,32 @@ class Previewer:
     def __init__(self) -> None:
         self._tmpdir = Path(tempfile.mkdtemp(prefix="dotfiles-preview."))
         self._helpers: dict[str, tuple[float, str, str]] = {}  # name -> (when, key, out)
-        # dasshboard's board and its colours, read once. Nothing in this window
-        # can change either -- they are its config, not this repo's answers -- so
-        # unlike the status helpers there is no TTL to expire: re-running a
-        # subprocess on every keystroke to be told the same thing would be pure
-        # cost. `None` means "not looked yet"; a failed look caches its own
-        # fallback, so it is not retried on every render either.
-        self._dassh: tuple[DasshTheme, list[DasshTile], bool] | None = None
+        # dasshboard's board, read once. Nothing in this window can change it --
+        # it is the user's own hosts, not one of the answers -- so unlike the
+        # status helpers there is no TTL to expire: re-running a subprocess on
+        # every keystroke to be told the same thing would be pure cost. `None`
+        # means "not looked yet"; a failed look caches its own fallback, so it
+        # is not retried on every render either.
+        self._dassh: tuple[list[DasshTile], bool] | None = None
 
     def cleanup(self) -> None:
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
     # -- helper scripts -----------------------------------------------------
-    def _helper_output(self, name: str, show_temp: str) -> str:
-        """Run a rendered copy of a status helper, with the colours left as
-        sentinels so the result can be re-used across colour changes."""
-        key = f"{name}:{show_temp}"
+    def _helper_output(self, name: str, mapping: dict[str, str], cache_key: str) -> str:
+        """Run a rendered copy of a status helper, with the accent colours left
+        as sentinels so the result can be re-used across colour changes.
+
+        `cache_key` must change whenever anything in `mapping` would change what
+        the script actually DOES (SHOW_TEMP, BAR_WIDTH, DISK_MOUNTPOINT) -- not
+        just its colour, which the sentinel swap below repaints for free."""
         cached = self._helpers.get(name)
-        if cached and cached[1] == key and time.monotonic() - cached[0] < HELPER_TTL:
+        if cached and cached[1] == cache_key and time.monotonic() - cached[0] < HELPER_TTL:
             return cached[2]
 
         rel = HELPER_TEMPLATES[name]
         script = self._tmpdir / name
-        script.write_text(
-            render_template(rel, {
-                "PRIMARY": P_SENTINEL,
-                "SECONDARY": S_SENTINEL,
-                "SHOW_TEMP": show_temp,
-            }),
-            encoding="utf-8",
-        )
+        script.write_text(render_template(rel, mapping), encoding="utf-8")
         script.chmod(0o755)
         try:
             proc = subprocess.run(
@@ -868,15 +871,32 @@ class Previewer:
             out = proc.stdout.strip("\n")
         except (OSError, subprocess.SubprocessError):
             out = ""
-        self._helpers[name] = (time.monotonic(), key, out)
+        self._helpers[name] = (time.monotonic(), cache_key, out)
         return out
 
-    def _resolver(self, show_temp: str, primary: str, secondary: str):
+    def _resolver(self, answers: Answers, primary: str, secondary: str):
+        show_temp = "1" if (answers.show_temp and answers.show_gpu) else "0"
+        # BAR_COLOR_HEX is always exactly PRIMARY or SECONDARY (see accent_hex()
+        # in lib/derive.sh), so it takes the matching sentinel rather than a
+        # resolved hex -- the same trick PRIMARY/SECONDARY themselves use, and
+        # for the same reason: a helper that only differs in which sentinel got
+        # baked in can still be repainted without re-running it.
+        bar_sentinel = P_SENTINEL if answers.bar_color == "primary" else S_SENTINEL
+        mapping = {
+            "PRIMARY": P_SENTINEL,
+            "SECONDARY": S_SENTINEL,
+            "SHOW_TEMP": show_temp,
+            "BAR_WIDTH": str(answers.bar_width),
+            "BAR_COLOR_HEX": bar_sentinel,
+            "DISK_MOUNTPOINT": answers.disk_mountpoint,
+        }
+        cache_key = f"{show_temp}:{answers.bar_width}:{answers.bar_color}:{answers.disk_mountpoint}"
+
         def resolve(command: str) -> str:
             name = os.path.basename(command.strip().strip("'\""))
             if name not in HELPER_TEMPLATES:
                 return ""
-            out = self._helper_output(name, show_temp)
+            out = self._helper_output(name, mapping, f"{name}:{cache_key}")
             return out.replace(P_SENTINEL, primary).replace(S_SENTINEL, secondary)
 
         return resolve
@@ -886,8 +906,7 @@ class Previewer:
         """The hsl bar, the only one previewed: tmux's is assembled from the
         same toggles and stays in sync by construction (see lib/derive.sh), so
         showing both said the same thing twice."""
-        env = answers.as_env()
-        resolve = self._resolver(env["SHOW_TEMP"], derived["PRIMARY"], derived["SECONDARY"])
+        resolve = self._resolver(answers, derived["PRIMARY"], derived["SECONDARY"])
         return fit_block(compose_bar(
             render_bar_format(derived["HSL_STATUS_LEFT"], resolve),
             render_bar_format(derived["HSL_STATUS_RIGHT"], resolve),
@@ -1226,30 +1245,27 @@ class Previewer:
         # The window title sits on the top border, as herdr draws it.
         return fit_block(_overlay_title(out, title, 2), width)
 
-    def _dassh_board(self) -> tuple[DasshTheme, list[DasshTile], bool]:
-        """dasshboard's colours and its board, read once per UI session.
+    def _dassh_tiles(self) -> tuple[list[DasshTile], bool]:
+        """dasshboard's board, read once per UI session.
 
-        Returns (theme, tiles, real). `real` is False when dasshboard is not
+        Returns (tiles, real). `real` is False when dasshboard is not
         installed, in which case the tiles are a sample and the pane says so --
         the pane's job is to answer "what is this, and do I want it at login",
         and it has to answer that on a machine that has not installed it yet.
+
+        Colours are no longer read here: install.sh now writes this machine's
+        primary/accent straight into dasshboard's own [theme] table, so
+        dassh() below takes them from `derived` like every other pane. Only
+        the board itself -- the user's own hosts -- is genuinely dasshboard's
+        to report.
         """
         if self._dassh is not None:
             return self._dassh
 
-        xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
-        config = Path(xdg) / "dasshboard" / "config.toml"
         tiles: list[DasshTile] = []
         real = False
         if shutil.which("dasshboard"):
             try:
-                # --config over guessing the path: it is dasshboard's own answer,
-                # and it costs nothing here since both calls are cached together.
-                proc = subprocess.run(["dasshboard", "--config"],
-                                      capture_output=True, text=True, timeout=5)
-                said = proc.stdout.strip()
-                if proc.returncode == 0 and said:
-                    config = Path(said)
                 # stderr is dropped: --list prints config-load complaints there
                 # and still lists what it could build, which is what we want.
                 proc = subprocess.run(["dasshboard", "--list"],
@@ -1260,19 +1276,19 @@ class Previewer:
                 tiles = []
         if not tiles:
             tiles = list(DASSH_SAMPLE)
-        self._dassh = (_dassh_theme_from(config), tiles, real)
+        self._dassh = (tiles, real)
         return self._dassh
 
-    def dassh(self, width: int) -> Text:
+    def dassh(self, derived: dict[str, str], width: int) -> Text:
         """A drawing, like the herdr pane and for the same reason: dasshboard is
         a full-screen program and cannot be made to print one frame (--list is
         its tiles, not a picture of them).
 
-        Takes no `derived`, and that is the point -- see the DASSH_PRIMARY block
-        above. Its colours are its own, so this is the one pane in the window
-        that does not move when an accent does.
+        The theme comes from `derived["DASSH_PRIMARY"]`/`["DASSH_ACCENT"]`,
+        same as every other pane -- see the block comment above DasshTheme.
         """
-        th, tiles, real = self._dassh_board()
+        th = DasshTheme.of(derived["DASSH_PRIMARY"], derived["DASSH_ACCENT"])
+        tiles, real = self._dassh_tiles()
         # Its own geometry: PAD 2 either side, cells up to CELL_W 38 wide and at
         # most MAX_COLS 4 of them, a tile being the cell less the 2-cell gutter.
         PAD, CELL_W, MAX_COLS = 2, 38, 4
@@ -1982,8 +1998,27 @@ class SetupApp(App):
                 yield Checkbox("hostname pill", self.answers.show_host, id="show_host")
                 yield Checkbox("GPU usage pill", self.answers.show_gpu, id="show_gpu")
                 yield Checkbox("└ GPU temperature", self.answers.show_temp, id="show_temp")
+                yield Checkbox("disk usage pill", self.answers.show_disk, id="show_disk")
+                with Horizontal(classes="field"):
+                    yield Label("└ mount")
+                    yield Input(value=self.answers.disk_mountpoint, id="disk-mountpoint",
+                                max_length=48)
                 yield Checkbox("Slurm job pill", self.answers.show_slurm, id="show_slurm")
                 yield Checkbox("date / time pill", self.answers.show_datetime, id="show_datetime")
+
+                # The GPU pill's two bars and the disk pill's one, all sharing
+                # one width and one colour -- previewed by the same "hsl-bar"
+                # pane the pills themselves are.
+                yield Static("Progress bars", classes="section")
+                with Horizontal(classes="field"):
+                    yield Label("length")
+                    yield Input(value=str(self.answers.bar_width), id="bar-width",
+                                max_length=2)
+                yield ChoiceRow("bar_color", "colour", BAR_COLOR_CHOICES,
+                                self.answers.bar_color, id="bar_color")
+                yield Static(Text("width in cells, and which accent fills\n"
+                                  "the GPU + disk pills' bars.", style="italic"),
+                             classes="hint")
 
                 # Previewed by the "herdr" and "dasshboard" panes below -- both
                 # drawings, since neither program can print one frame. A
@@ -1997,6 +2032,20 @@ class SetupApp(App):
                                   "with the status line where hsl is installed.\n"
                                   "NO_LOGIN_START=1 skips whichever it is.",
                                   style="italic"),
+                             classes="hint")
+
+                # Previewed by the "dasshboard" pane beside herdr's above --
+                # install.sh patches this machine's primary/accent straight
+                # into dasshboard's own [theme] table (see
+                # dasshboard_patch_theme() there), so this is the one control
+                # over which of the two lands in which of dasshboard's two
+                # roles.
+                yield Static("dasshboard", classes="section")
+                yield Checkbox("swap its primary/accent", self.answers.dassh_swap,
+                               id="dassh_swap")
+                yield Static(Text("primary is its chrome (wordmark, titles,\n"
+                                  "hairlines); accent only highlights the\n"
+                                  "selected tile.", style="italic"),
                              classes="hint")
 
                 # Previewed by the "claude code" pane, which is drawn rather than
@@ -2087,6 +2136,7 @@ class SetupApp(App):
 
     def on_mount(self) -> None:
         self._sync_temp_enabled()
+        self._sync_disk_enabled()
         self._sync_titles()
         self._sync_choices()
         self._sync_chrome()
@@ -2183,6 +2233,28 @@ class SetupApp(App):
         else:
             event.input.add_class("-invalid")
 
+    @on(Input.Changed, "#disk-mountpoint")
+    def _disk_mountpoint_typed(self, event: Input.Changed) -> None:
+        value = event.value.strip()
+        if MOUNTPOINT_RE.match(value):
+            event.input.remove_class("-invalid")
+            self.answers = replace(self.answers, disk_mountpoint=value)
+            self._clear_error()
+            self.schedule_preview()
+        else:
+            event.input.add_class("-invalid")
+
+    @on(Input.Changed, "#bar-width")
+    def _bar_width_typed(self, event: Input.Changed) -> None:
+        value = event.value.strip()
+        if value.isdigit() and BAR_WIDTH_MIN <= int(value) <= BAR_WIDTH_MAX:
+            event.input.remove_class("-invalid")
+            self.answers = replace(self.answers, bar_width=int(value))
+            self._clear_error()
+            self.schedule_preview()
+        else:
+            event.input.add_class("-invalid")
+
     @on(ChoiceRow.Picked)
     def _choice_picked(self, event: ChoiceRow.Picked) -> None:
         # The "editing" row is not an answer -- it only steers the grid, so it
@@ -2210,11 +2282,17 @@ class SetupApp(App):
         self.answers = replace(self.answers, **{field: bool(event.value)})
         if field == "show_gpu":
             self._sync_temp_enabled()
+        elif field == "show_disk":
+            self._sync_disk_enabled()
         self.schedule_preview()
 
     def _sync_temp_enabled(self) -> None:
         # SHOW_TEMP only means anything while the GPU pill is shown.
         self.query_one("#show_temp", Checkbox).disabled = not self.answers.show_gpu
+
+    def _sync_disk_enabled(self) -> None:
+        # The mountpoint only means anything while the disk pill is shown.
+        self.query_one("#disk-mountpoint", Input).disabled = not self.answers.show_disk
 
     def _sync_choices(self) -> None:
         """Paint each choice in the colour it names, and grey out the glyph
@@ -2226,9 +2304,11 @@ class SetupApp(App):
             "neutral": NEUTRAL_FG,
         }
         for row in self.query(ChoiceRow):
-            # The "editing" row names the two accents too, so it takes the same
-            # swatches; only the glyph-mode row (fixed/slurm) has none.
-            named = row.choices is ACCENT_CHOICES or row.choices is TARGET_CHOICES
+            # The "editing" row and the bar colour row both name the two
+            # accents too, so they take the same swatches; only the glyph-mode
+            # row (fixed/slurm) and the login-start row have none.
+            named = (row.choices is ACCENT_CHOICES or row.choices is TARGET_CHOICES
+                     or row.choices is BAR_COLOR_CHOICES)
             row.set_colours(colours if named else {})
         slurm = self.answers.omp_icon_mode == "slurm"
         glyph = self.query_one("#omp_icon", ChoiceRow)
@@ -2347,9 +2427,7 @@ class SetupApp(App):
                 "claude": self.previewer.claude(derived, answers, w("claude")),
                 "claude-chat": self.previewer.chat(derived, w("claude-chat")),
                 "herdr": self.previewer.herdr(derived, w("herdr")),
-                # No `derived`: its colours are its own config's, not this
-                # window's answers. See the DASSH_PRIMARY block.
-                "dassh": self.previewer.dassh(w("dassh")),
+                "dassh": self.previewer.dassh(derived, w("dassh")),
             }
             if self.catalogue:
                 panes["plan"] = self.previewer.plan(derived, answers, w("plan"))
@@ -2392,6 +2470,10 @@ class SetupApp(App):
             ("#secondary-hex", HEX_RE.match(self.answers.secondary), "Secondary colour is not a #rrggbb value."),
             ("#pill-hex", HEX_RE.match(self.answers.omp_pill_bg), "Prompt panel is not a #rrggbb value."),
             ("#machine", MACHINE_RE.match(self.answers.machine), "Machine name: 1-24 of [A-Za-z0-9._-]."),
+            ("#disk-mountpoint", MOUNTPOINT_RE.match(self.answers.disk_mountpoint),
+             "Disk mountpoint must be an absolute path."),
+            ("#bar-width", BAR_WIDTH_MIN <= self.answers.bar_width <= BAR_WIDTH_MAX,
+             f"Progress bar length must be {BAR_WIDTH_MIN}-{BAR_WIDTH_MAX}."),
         ):
             if not ok:
                 self._error(message)
@@ -2425,7 +2507,7 @@ def dump(answers: Answers, width: int) -> None:
             ("claude code status line", previewer.claude(derived, answers, width)),
             ("claude code", previewer.chat(derived, width)),
             ("herdr", previewer.herdr(derived, width)),
-            ("dasshboard", previewer.dassh(width)),
+            ("dasshboard", previewer.dassh(derived, width)),
             (f"install plan  ({privilege_summary()})",
              previewer.plan(derived, answers, width)),
         ):
