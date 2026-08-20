@@ -92,6 +92,7 @@ P_SENTINEL = "<<PRIMARY>>"
 S_SENTINEL = "<<SECONDARY>>"
 
 HELPER_TEMPLATES = {
+    "cpu-status.sh": "tmux/cpu-status.sh.in",
     "gpu-status.sh": "tmux/gpu-status.sh.in",
     "disk-status.sh": "tmux/disk-status.sh.in",
     "slurm-status.sh": "tmux/slurm-status.sh.in",
@@ -207,6 +208,7 @@ class Answers:
     secondary: str = "#ff7803"
     machine: str = "machine"
     show_host: bool = True
+    show_cpu: bool = True
     show_gpu: bool = True
     show_temp: bool = True
     show_disk: bool = True
@@ -247,6 +249,10 @@ class Answers:
     # status line bubbles, the shimmers and the message tints -- never the
     # prompt or either status bar).
     claude_swap: bool = False
+    # Same idea for OpenCode's own primary/secondary pair: its theme paints the
+    # TUI chrome (prompt, borders, syntax), so which accent lands where is a
+    # taste the same way Claude's is.
+    opencode_swap: bool = False
     # Same idea for dasshboard's own "primary"/"accent" pair (see the
     # DASSH_SWAP block in lib/derive.sh) -- install.sh now patches those two
     # keys of its [theme] table directly, so this is the one control that
@@ -319,6 +325,7 @@ class Answers:
             secondary=secondary if HEX_RE.match(secondary) else d.secondary,
             machine=machine if MACHINE_RE.match(machine) else d.machine,
             show_host=flag("SHOW_HOST", d.show_host),
+            show_cpu=flag("SHOW_CPU", d.show_cpu),
             show_gpu=flag("SHOW_GPU", d.show_gpu),
             show_temp=flag("SHOW_TEMP", d.show_temp),
             show_disk=flag("SHOW_DISK", d.show_disk),
@@ -329,6 +336,7 @@ class Answers:
             bar_color=choice("BAR_COLOR", d.bar_color, BAR_COLOR_CHOICES),
             login_start=choice("LOGIN_START", legacy_login, LOGIN_STARTS),
             claude_swap=flag("CLAUDE_SWAP", d.claude_swap),
+            opencode_swap=flag("OPENCODE_SWAP", d.opencode_swap),
             dassh_swap=flag("DASSH_SWAP", d.dassh_swap),
             omp_icon_mode=choice("OMP_ICON_MODE", d.omp_icon_mode, ICON_MODES),
             omp_icon=choice("OMP_ICON", legacy_icon),
@@ -349,6 +357,7 @@ class Answers:
             "SECONDARY": self.secondary,
             "MACHINE": self.machine,
             "SHOW_HOST": _b(self.show_host),
+            "SHOW_CPU": _b(self.show_cpu),
             "SHOW_GPU": _b(self.show_gpu),
             "SHOW_TEMP": _b(temp),
             "SHOW_DISK": _b(self.show_disk),
@@ -359,6 +368,7 @@ class Answers:
             "BAR_COLOR": self.bar_color,
             "LOGIN_START": self.login_start,
             "CLAUDE_SWAP": _b(self.claude_swap),
+            "OPENCODE_SWAP": _b(self.opencode_swap),
             "DASSH_SWAP": _b(self.dassh_swap),
             "OMP_ICON_MODE": self.omp_icon_mode,
             "OMP_ICON": self.omp_icon,
@@ -497,6 +507,13 @@ def placeholders(derived: dict[str, str], answers: Answers) -> dict[str, str]:
         "CLAUDE_SELECTION_BG": derived["CLAUDE_SELECTION_BG"],
         "CLAUDE_TRACK_BG": derived["CLAUDE_TRACK_BG"],
         "CLAUDE_BASH_BG": derived["CLAUDE_BASH_BG"],
+        # OpenCode's own UI theme. Same idea as the Claude keys above: no pane
+        # previews the theme file itself, but placeholders() must be able to
+        # render opencode/themes/dotfiles.json.in.
+        "OPENCODE_PRIMARY": derived["OPENCODE_PRIMARY"],
+        "OPENCODE_SECONDARY": derived["OPENCODE_SECONDARY"],
+        "OPENCODE_PRIMARY_SHIMMER": derived["OPENCODE_PRIMARY_SHIMMER"],
+        "OPENCODE_SECONDARY_SHIMMER": derived["OPENCODE_SECONDARY_SHIMMER"],
         "OMP_TEXT_COLOR": derived["OMP_TEXT_COLOR"],
         "OMP_CHEVRON_FG": derived["OMP_CHEVRON_FG"],
         "OMP_CHEVRON_ERR": derived["OMP_CHEVRON_ERR"],
@@ -1033,6 +1050,59 @@ class Previewer:
         # The mode indicators, the whole point of the secondary.
         line(("  ⏸ plan mode on", Style(color=secondary)),
              ("   ⏵⏵ accept edits" if wide else "", Style(color=secondary)))
+        return fit_block(out, width)
+
+    def opencode(self, derived: dict[str, str], width: int) -> Text:
+        """OpenCode's own UI: a drawing, and the third one in this file.
+
+        Like Claude Code, OpenCode is a full-screen interactive program with no
+        --render-one-turn, so this is drawn rather than real. Every colour comes
+        from the same derived values the installed theme uses, so the pane cannot
+        show an accent placement the theme does not have.
+        """
+        if width < 26:
+            return Text("(too narrow)", style="dim")
+
+        primary = derived["OPENCODE_PRIMARY"]
+        secondary = derived["OPENCODE_SECONDARY"]
+        text_fg = "#cdd6f4"
+        dim_fg = "#6c7086"
+        wide = width >= 46
+        out = Text()
+
+        def line(*parts: tuple[str, Style | None]) -> None:
+            for body, style in parts:
+                out.append(body, style)
+            out.append("\n")
+
+        # Header bar: model name in primary, agent badge in secondary.
+        line((" opencode ", Style(color=primary, bold=True)),
+             ("  build" if wide else " b", Style(color=secondary)))
+        line(("─" * (width - 1), Style(color=dim_fg)))
+        # A user message.
+        line((" > refactor the config module" if wide else " > refactor",
+              Style(color=text_fg)))
+        line()
+        # An answer with a bullet marker and inline code in primary.
+        line(("● ", Style(color=primary)),
+             ("Updated ", Style(color=text_fg)),
+             ("`configure.py`", Style(color=primary)),
+             (" — 3 files" if wide else "", Style(color=text_fg)))
+        line()
+        # A tool-use block: secondary border, primary content.
+        edge = Style(color=secondary)
+        out.append("▌", edge)
+        out.append(" Bash: ", Style(color=primary))
+        out.append("git diff --stat", Style(color=text_fg))
+        out.append("\n")
+        line()
+        # The prompt border.
+        border = Style(color=primary)
+        line(("╭" + "─" * (width - 2) + "╮", border))
+        out.append("│", border)
+        out.append(" > ", Style(color=dim_fg))
+        line((" " * max(0, width - 5), None), ("│", border))
+        line(("╰" + "─" * (width - 2) + "╯", border))
         return fit_block(out, width)
 
     def posh(self, derived: dict[str, str], answers: Answers, width: int) -> Text:
@@ -1581,7 +1651,7 @@ def _overlay_title(block: Text, title: Text, column: int) -> Text:
 # ---------------------------------------------------------------------------
 # The preview panes, by widget id. refresh_previews() sizes each one from its
 # own widget, so this is the list of things that have to exist in compose().
-PREVIEW_PANES = ("posh", "hsl-bar", "claude", "claude-chat", "herdr", "dassh", "plan")
+PREVIEW_PANES = ("posh", "hsl-bar", "claude", "claude-chat", "opencode", "herdr", "dassh", "plan")
 
 SWATCH_W = 4
 # Which accent the grid is editing. Deliberately its own tuple rather than a
@@ -1996,6 +2066,7 @@ class SetupApp(App):
 
                 yield Static("Status line (herdr + tmux)", classes="section")
                 yield Checkbox("hostname pill", self.answers.show_host, id="show_host")
+                yield Checkbox("CPU usage pill", self.answers.show_cpu, id="show_cpu")
                 yield Checkbox("GPU usage pill", self.answers.show_gpu, id="show_gpu")
                 yield Checkbox("└ GPU temperature", self.answers.show_temp, id="show_temp")
                 yield Checkbox("disk usage pill", self.answers.show_disk, id="show_disk")
@@ -2006,9 +2077,9 @@ class SetupApp(App):
                 yield Checkbox("Slurm job pill", self.answers.show_slurm, id="show_slurm")
                 yield Checkbox("date / time pill", self.answers.show_datetime, id="show_datetime")
 
-                # The GPU pill's two bars and the disk pill's one, all sharing
-                # one width and one colour -- previewed by the same "hsl-bar"
-                # pane the pills themselves are.
+                # The CPU pill's bar, the GPU pill's two and the disk pill's
+                # one, all sharing one width and one colour -- previewed by
+                # the same "hsl-bar" pane the pills themselves are.
                 yield Static("Progress bars", classes="section")
                 with Horizontal(classes="field"):
                     yield Label("length")
@@ -2017,7 +2088,7 @@ class SetupApp(App):
                 yield ChoiceRow("bar_color", "colour", BAR_COLOR_CHOICES,
                                 self.answers.bar_color, id="bar_color")
                 yield Static(Text("width in cells, and which accent fills\n"
-                                  "the GPU + disk pills' bars.", style="italic"),
+                                  "the CPU + GPU + disk pills' bars.", style="italic"),
                              classes="hint")
 
                 # Previewed by the "herdr" and "dasshboard" panes below -- both
@@ -2059,6 +2130,14 @@ class SetupApp(App):
                 yield Static(Text("menus, commands and answer text take\n"
                                   "the primary; modes take the secondary.\n"
                                   "Not the status line.", style="italic"),
+                             classes="hint")
+
+                yield Static("OpenCode", classes="section")
+                yield Checkbox("swap the accents in its UI", self.answers.opencode_swap,
+                               id="opencode_swap")
+                yield Static(Text("prompt, borders and syntax take the\n"
+                                  "primary; mode highlights take the\n"
+                                  "secondary.", style="italic"),
                              classes="hint")
 
                 yield Static("oh-my-posh prompt", classes="section")
@@ -2112,6 +2191,9 @@ class SetupApp(App):
                 with Container(classes="preview wide") as chat_box:
                     chat_box.border_title = "claude code"
                     yield Static(id="claude-chat")
+                with Container(classes="preview wide") as oc_box:
+                    oc_box.border_title = "opencode"
+                    yield Static(id="opencode")
                 with Container(classes="preview") as herdr_box:
                     herdr_box.border_title = "herdr"
                     yield Static(id="herdr")
@@ -2426,6 +2508,7 @@ class SetupApp(App):
                 "hsl-bar": self.previewer.statusline(derived, answers, w("hsl-bar")),
                 "claude": self.previewer.claude(derived, answers, w("claude")),
                 "claude-chat": self.previewer.chat(derived, w("claude-chat")),
+                "opencode": self.previewer.opencode(derived, w("opencode")),
                 "herdr": self.previewer.herdr(derived, w("herdr")),
                 "dassh": self.previewer.dassh(derived, w("dassh")),
             }

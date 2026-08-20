@@ -228,6 +228,7 @@ TOOL_META=(
   "neovim|Neovim|editor"
   "lazyvim|LazyVim starter|editor"
   "claude|Claude Code|editor"
+  "opencode|OpenCode|editor"
   "gdown|gdown|python"
   "groundcontrol|ground-control-tui|python"
   "sekrt|sekrt (secret manager)|python"
@@ -492,6 +493,7 @@ tool_present() {
     # under ~/.local/share/claude/versions, so the launcher is the thing to
     # look for -- an update swaps what it points at, not where it lives.
     claude)        have claude || [ -x "$HOME/.local/bin/claude" ] ;;
+    opencode)      have opencode || [ -x "$HOME/.local/bin/opencode" ] ;;
     gdown)         have gdown ;;
     groundcontrol) have groundcontrol || have gc ;;
     sekrt)         have sekrt ;;
@@ -978,6 +980,7 @@ tool_route() {
     # so there is no --no-modify-path to pass: nothing here can land in the
     # tracked ~/.profile symlink.
     claude)   echo "script|claude.ai/install.sh -> ~/.local/bin" ;;
+    opencode) echo "script|opencode.ai/install -> ~/.local/bin" ;;
     gdown|groundcontrol|sekrt|nvitop)
               if [ "$AVAIL_UV" = 1 ]; then echo "uv|uv tool install $(_pypi_name "$1")"
               else echo "|needs uv"; fi ;;
@@ -1572,6 +1575,13 @@ install_claude() {
   curl -fsSL https://claude.ai/install.sh | bash >/dev/null 2>&1 || return 1
   note_path "$HOME/.local/bin"
   tool_present claude
+}
+
+install_opencode() {
+  mkdir -p "$HOME/.local/bin"
+  curl -fsSL https://opencode.ai/install | bash >/dev/null 2>&1 || return 1
+  note_path "$HOME/.local/bin"
+  tool_present opencode
 }
 
 install_gdown()         { uv_install gdown; }

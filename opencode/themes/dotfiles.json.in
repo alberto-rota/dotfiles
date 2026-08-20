@@ -1,0 +1,70 @@
+{
+#>> OpenCode's own UI, in this machine's two accents. Mirrors the approach of
+#>> claude/themes/accent.json.in: primary paints the chrome you read all the
+#>> time (the prompt, text, selected items), secondary flags modes and
+#>> highlights (accept edits, active borders).
+#>>
+#>> @OPENCODE_PRIMARY@ / @OPENCODE_SECONDARY@ and NOT @PRIMARY@ / @SECONDARY@:
+#>> this is the one file that honours OPENCODE_SWAP -- derive.sh resolves the
+#>> pair, and the shimmer values below come out of the same answer, so nothing
+#>> here can end up half swapped.
+  "$schema": "https://opencode.ai/theme.json",
+  "defs": {
+    "primary": "@OPENCODE_PRIMARY@",
+    "primaryShimmer": "@OPENCODE_PRIMARY_SHIMMER@",
+    "secondary": "@OPENCODE_SECONDARY@",
+    "secondaryShimmer": "@OPENCODE_SECONDARY_SHIMMER@"
+  },
+  "theme": {
+    "primary": "primary",
+    "secondary": "secondary",
+    "accent": "secondary",
+    "error": "#f38ba8",
+    "warning": "#fab387",
+    "success": "#a6e3a1",
+    "info": "primary",
+    "text": "#ebdbb2",
+    "textMuted": "#6c7086",
+    "background": "#000000",
+    "backgroundPanel": "#282828",
+    "backgroundElement": "#282828",
+    "border": "#45475a",
+    "borderActive": "secondaryShimmer",
+    "borderSubtle": "#313244",
+    "diffAdded": "#a6e3a1",
+    "diffRemoved": "#f38ba8",
+    "diffContext": "#6c7086",
+    "diffHunkHeader": "primaryShimmer",
+    "diffHighlightAdded": "#a6e3a1",
+    "diffHighlightRemoved": "#f38ba8",
+    "diffAddedBg": "#1e1e2e",
+    "diffRemovedBg": "#1e1e2e",
+    "diffContextBg": "#1e1e2e",
+    "diffLineNumber": "#585b70",
+    "diffAddedLineNumberBg": "#1e1e2e",
+    "diffRemovedLineNumberBg": "#1e1e2e",
+    "markdownText": "#ebdbb2",
+    "markdownHeading": "primary",
+    "markdownLink": "secondary",
+    "markdownLinkText": "#ebdbb2",
+    "markdownCode": "primaryShimmer",
+    "markdownBlockQuote": "#6c7086",
+    "markdownEmph": "primary",
+    "markdownStrong": "primary",
+    "markdownHorizontalRule": "#45475a",
+    "markdownListItem": "#ebdbb2",
+    "markdownListEnumeration": "#6c7086",
+    "markdownImage": "secondary",
+    "markdownImageText": "#ebdbb2",
+    "markdownCodeBlock": "primaryShimmer",
+    "syntaxComment": "#6c7086",
+    "syntaxKeyword": "secondary",
+    "syntaxFunction": "primary",
+    "syntaxVariable": "#ebdbb2",
+    "syntaxString": "#a6e3a1",
+    "syntaxNumber": "#fab387",
+    "syntaxType": "primaryShimmer",
+    "syntaxOperator": "secondaryShimmer",
+    "syntaxPunctuation": "#9399b2"
+  }
+}

@@ -222,6 +222,7 @@ MACHINE="$(default_machine)"
 # herdr wrapper -- the two are meant to stay visually identical, see CLAUDE.md). TEMP is a sub-toggle
 # of GPU: it only has an effect when the GPU pill itself is shown.
 SHOW_HOST=1
+SHOW_CPU=1
 SHOW_GPU=1
 SHOW_TEMP=1
 SHOW_DISK=1
@@ -871,6 +872,7 @@ ask_choice() {
 ask_components() {
   section "Status line" "tmux bar + hsl bar"
   ask_bool SHOW_HOST     "  hostname pill"
+  ask_bool SHOW_CPU      "  CPU usage pill"
   ask_bool SHOW_GPU      "  GPU usage pill"
   if [ "$SHOW_GPU" = 1 ]; then
     ask_bool SHOW_TEMP   "    also GPU temperature"
@@ -882,7 +884,7 @@ ask_components() {
   ask_bool SHOW_SLURM    "  Slurm job pill"
   ask_bool SHOW_DATETIME "  date / time pill"
 
-  section "Progress bars" "GPU + disk pills"
+  section "Progress bars" "CPU + GPU + disk pills"
   ask_bar_width
   ask_choice BAR_COLOR   "  colour" primary secondary
 
@@ -1064,6 +1066,8 @@ show_preview() {
   printf '    '
   [ "$SHOW_HOST" = 1 ] && bar_seg $(( ${#MACHINE} + 2 )) \
     '\033[48;2;0;0;0m\033[1m\033[38;2;255;255;255m %s \033[0m' "$MACHINE"
+  [ "$SHOW_CPU" = 1 ] && bar_seg 14 \
+    '\033[48;2;0;0;0m\033[38;2;%sm CPU \033[38;2;%sm▰▰▱▱ 23%% \033[0m' "$p" "$bar_c"
   if [ "$SHOW_GPU" = 1 ]; then
     # Label in primary (like every pill's cap), the bar itself in whichever
     # accent BAR_COLOR names, temperature in its own fixed peach -- same three
@@ -1141,7 +1145,7 @@ run_tui() {
   # The UI reads the current answers from the environment, exactly as
   # lib/derive.sh does when the UI shells out to it for its live preview.
   export DOTFILES PRIMARY SECONDARY MACHINE USER_NAME NEUTRAL_FG
-  export SHOW_HOST SHOW_GPU SHOW_TEMP SHOW_DISK SHOW_SLURM SHOW_DATETIME
+  export SHOW_HOST SHOW_CPU SHOW_GPU SHOW_TEMP SHOW_DISK SHOW_SLURM SHOW_DATETIME
   export DISK_MOUNTPOINT BAR_WIDTH BAR_COLOR
   export OMP_ICON_MODE OMP_ICON OMP_TEXT OMP_CHEVRON_OK OMP_CHEVRON_ERROR OMP_PILL_BG
   export LOGIN_START CLAUDE_SWAP DASSH_SWAP
@@ -1207,7 +1211,7 @@ derive
 echo "  primary   $PRIMARY  (herdr sidebar rail $PRIMARY_DIM)"
 echo "  secondary $SECONDARY"
 echo "  machine   $MACHINE"
-echo "  status    host=$SHOW_HOST gpu=$SHOW_GPU temp=$SHOW_TEMP disk=$SHOW_DISK slurm=$SHOW_SLURM datetime=$SHOW_DATETIME"
+echo "  status    host=$SHOW_HOST cpu=$SHOW_CPU gpu=$SHOW_GPU temp=$SHOW_TEMP disk=$SHOW_DISK slurm=$SHOW_SLURM datetime=$SHOW_DATETIME"
 [ "$SHOW_DISK" = 1 ] && echo "  disk      mountpoint=$DISK_MOUNTPOINT"
 echo "  bars      width=$BAR_WIDTH colour=$BAR_COLOR"
 echo "  omp       glyph=$OMP_ICON_MODE/$OMP_ICON text=$OMP_TEXT chevrons=$OMP_CHEVRON_OK,$OMP_CHEVRON_ERROR"
@@ -1249,6 +1253,7 @@ PRIMARY="$PRIMARY"
 SECONDARY="$SECONDARY"
 MACHINE="$MACHINE"
 SHOW_HOST=$SHOW_HOST
+SHOW_CPU=$SHOW_CPU
 SHOW_GPU=$SHOW_GPU
 SHOW_TEMP=$SHOW_TEMP
 SHOW_DISK=$SHOW_DISK
@@ -1505,6 +1510,10 @@ render() {
         -e "s|@CLAUDE_USAGE_RGB@|$CLAUDE_USAGE_RGB|g" \
         -e "s|@CLAUDE_WEEK_RGB@|$CLAUDE_WEEK_RGB|g" \
         -e "s|@CLAUDE_CTX_RGB@|$CLAUDE_CTX_RGB|g" \
+        -e "s|@OPENCODE_PRIMARY_SHIMMER@|$OPENCODE_PRIMARY_SHIMMER|g" \
+        -e "s|@OPENCODE_SECONDARY_SHIMMER@|$OPENCODE_SECONDARY_SHIMMER|g" \
+        -e "s|@OPENCODE_PRIMARY@|$OPENCODE_PRIMARY|g" \
+        -e "s|@OPENCODE_SECONDARY@|$OPENCODE_SECONDARY|g" \
         -e "s|@TMUX_STATUS_LEFT@|$TMUX_STATUS_LEFT|g" \
         -e "s|@TMUX_STATUS_RIGHT@|$TMUX_STATUS_RIGHT|g" \
         -e "s|@HSL_STATUS_LEFT@|$HSL_STATUS_LEFT|g" \
@@ -1636,17 +1645,20 @@ render_script tmux/other-sessions.sh.in tmux/other-sessions.sh
 render_script tmux/slurm-status.sh.in   tmux/slurm-status.sh
 # The GPU pill needs @SHOW_TEMP@, which no other tmux template does, but it is
 # otherwise an ordinary status helper and lives with the rest of them. Both
-# bars -- tmux's and hsl's -- call these four scripts at these paths, so there
+# bars -- tmux's and hsl's -- call these five scripts at these paths, so there
 # is exactly one rendered copy of each and the two cannot show different
-# readings. gpu-status.sh no-ops on a machine with no nvidia-smi and
-# disk-status.sh no-ops on one with no such mountpoint, so linking either
-# unconditionally is harmless even with SHOW_GPU=0/SHOW_DISK=0, which simply
-# never call them.
+# readings. cpu-status.sh, gpu-status.sh and disk-status.sh each no-op on a
+# machine that can't answer their own question (no /proc or top, no
+# nvidia-smi, no such mountpoint), so linking any of them unconditionally is
+# harmless even with SHOW_CPU=0/SHOW_GPU=0/SHOW_DISK=0, which simply never
+# call them.
+render_script tmux/cpu-status.sh.in     tmux/cpu-status.sh
 render_script tmux/gpu-status.sh.in     tmux/gpu-status.sh
 render_script tmux/disk-status.sh.in    tmux/disk-status.sh
 link "$GENERATED/tmux/.tmux.conf"        "$HOME/.tmux.conf"
 link "$GENERATED/tmux/other-sessions.sh" "$HOME/.tmux/other-sessions.sh"
 link "$GENERATED/tmux/slurm-status.sh"   "$HOME/.tmux/slurm-status.sh"
+link "$GENERATED/tmux/cpu-status.sh"     "$HOME/.tmux/cpu-status.sh"
 link "$GENERATED/tmux/gpu-status.sh"     "$HOME/.tmux/gpu-status.sh"
 link "$GENERATED/tmux/disk-status.sh"    "$HOME/.tmux/disk-status.sh"
 
@@ -1669,6 +1681,39 @@ for f in "$DOTFILES"/claude/themes/*.json; do
   [ -e "$f" ] || continue
   link "$f" "$HOME/.claude/themes/$(basename "$f")"
 done
+
+# --- opencode ---
+# Same approach as Claude Code: a custom theme derived from the two accents,
+# linked into OpenCode's theme directory. tui.json selects it by name.
+for f in "$DOTFILES"/opencode/themes/*.json.in; do
+  b="$(basename "$f" .in)"
+  render "opencode/themes/$(basename "$f")" "opencode/themes/$b"
+  link "$GENERATED/opencode/themes/$b" "$HOME/.config/opencode/themes/$b"
+done
+for f in "$DOTFILES"/opencode/themes/*.json; do
+  [ -e "$f" ] || continue
+  link "$f" "$HOME/.config/opencode/themes/$(basename "$f")"
+done
+# Select the dotfiles theme in tui.json, creating the file if absent.
+OPENCODE_TUI_JSON="$HOME/.config/opencode/tui.json"
+mkdir -p "$(dirname "$OPENCODE_TUI_JSON")"
+if [ ! -e "$OPENCODE_TUI_JSON" ]; then
+  printf '{\n  "$schema": "https://opencode.ai/tui.json",\n  "theme": "dotfiles"\n}\n' > "$OPENCODE_TUI_JSON"
+  echo "Wrote $OPENCODE_TUI_JSON (dotfiles theme)"
+elif grep -q '"theme"' "$OPENCODE_TUI_JSON" 2>/dev/null; then
+  # Patch the existing theme value in place. sed -i needs a suffix on BSD, and
+  # the value could be any string, so a temp file is the portable approach.
+  _oc_tmp="$(mktemp "${TMPDIR:-/tmp}/dotfiles-oc.XXXXXX")"
+  sed 's/"theme"[[:space:]]*:[[:space:]]*"[^"]*"/"theme": "dotfiles"/' \
+      "$OPENCODE_TUI_JSON" > "$_oc_tmp" && mv "$_oc_tmp" "$OPENCODE_TUI_JSON"
+  echo "Set opencode theme to dotfiles in $OPENCODE_TUI_JSON"
+else
+  # No theme key at all -- insert one before the closing brace.
+  _oc_tmp="$(mktemp "${TMPDIR:-/tmp}/dotfiles-oc.XXXXXX")"
+  sed 's/}$ /  "theme": "dotfiles"\n}/' "$OPENCODE_TUI_JSON" > "$_oc_tmp" \
+    && mv "$_oc_tmp" "$OPENCODE_TUI_JSON"
+  echo "Added theme to $OPENCODE_TUI_JSON"
+fi
 
 # --- herdr ---
 # Only hand-written config is synced. plugins.json, plugins/github/ (the plugin
@@ -1923,6 +1968,16 @@ fi
 # A real file of theirs, or a symlink of their own that resolves, is never touched.
 if [ -d "$HOME/.claude/themes" ]; then
   for f in "$HOME"/.claude/themes/*.json; do
+    [ -L "$f" ] || continue
+    [ -e "$f" ] && continue
+    case "$(readlink "$f")" in
+      "$GENERATED"/*) rm -f "$f"; echo "Pruned stale theme link $(tilde "$f")" ;;
+    esac
+  done
+fi
+# Same sweep for OpenCode's theme directory.
+if [ -d "$HOME/.config/opencode/themes" ]; then
+  for f in "$HOME"/.config/opencode/themes/*.json; do
     [ -L "$f" ] || continue
     [ -e "$f" ] && continue
     case "$(readlink "$f")" in

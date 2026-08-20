@@ -1,0 +1,80 @@
+#!/bin/bash
+#>> TEMPLATE -- rendered by install.sh with @PRIMARY@ / @BAR_WIDTH@ /
+#>> @BAR_COLOR_HEX@ substituted.
+#>> Edit THIS file, not the rendered copy in dotfiles/.generated/. #>> lines are stripped.
+#>>
+#>> A CPU-usage pill for the status bar's right half, same shape as the disk
+#>> pill beside it: the label/cap is @PRIMARY@ like every other pill in this
+#>> bar, and only the bar fill takes the configurable BAR_COLOR_HEX/BAR_WIDTH --
+#>> the same answer the GPU pill's two bars and the disk pill's one take theirs
+#>> from, so recolouring or resizing one moves all of them.
+
+BAR_WIDTH=@BAR_WIDTH@
+FILL_CHAR="▰"
+EMPTY_CHAR="▱"
+# The capsule icon the label leads with -- the same U+E0BA/U+E0BC pair the
+# GPU and disk pills' labels carry, written as UTF-8 bytes rather than \u
+# escapes (bash 4.2+ only, and this runs under whatever /bin/bash is, which
+# on macOS is 3.2) for the reason derive.sh's own CAP gives: a PUA codepoint
+# pasted raw into a shell script is exactly what an editor or terminal in
+# between silently turns into nothing.
+CAP_LEFT=$'\xee\x82\xba'
+CAP_RIGHT=$'\xee\x82\xbc'
+
+# Linux: two /proc/stat samples a fifth of a second apart, so the reading is
+# "usage over the last ~0.2s" rather than the cumulative average since boot --
+# a single read of /proc/stat is a running total of jiffies, not a percentage.
+# `cpu ` (with the trailing space) is the aggregate line across all cores;
+# per-core lines are `cpu0`, `cpu1`, ... and would double-count if matched too.
+# idle+iowait is the standard "how much of that time was idle" split; the
+# other eight-ish fields (user/nice/system/irq/softirq/steal/guest/guest_nice)
+# are summed for the total regardless of how many of them this kernel reports.
+#
+# macOS has no /proc at all, so `top -l 1 -n 0` stands in: a single snapshot
+# with the process list suppressed, reporting a "CPU usage: N% user, N% sys,
+# N% idle" line of its own that needs no delta.
+if [ -r /proc/stat ]; then
+  read_stat() {
+    awk '/^cpu / { t = 0; for (i = 2; i <= NF; i++) t += $i; print t, $5 + $6 }' /proc/stat
+  }
+  read -r T1 I1 <<<"$(read_stat)"
+  sleep 0.2
+  read -r T2 I2 <<<"$(read_stat)"
+  [ -n "${T2:-}" ] || exit 0
+  PCT=$(awk -v t1="$T1" -v i1="$I1" -v t2="$T2" -v i2="$I2" 'BEGIN {
+    dt = t2 - t1; di = i2 - i1
+    printf "%d", (dt > 0) ? (100 * (dt - di) / dt + 0.5) : 0
+  }')
+elif command -v top >/dev/null 2>&1; then
+  PCT=$(top -l 1 -n 0 2>/dev/null | awk -F'[ %]+' '/CPU usage/ {
+    for (i = 1; i <= NF; i++) if ($i == "idle") { printf "%.0f", 100 - $(i - 1); exit }
+  }')
+else
+  exit 0
+fi
+[ -n "${PCT:-}" ] || exit 0
+
+# A bar of BAR_WIDTH cells: filled cells in the chosen colour, the rest dim,
+# both on the pill's black background. Identical shape to gpu-status.sh's and
+# disk-status.sh's bar() -- kept as a separate copy rather than a shared
+# sourced file, since each pill degrades independently and neither should be
+# able to break the other.
+bar() {
+  local pct="$1" filled i out=""
+  [ "$pct" -lt 0 ] && pct=0
+  [ "$pct" -gt 100 ] && pct=100
+  filled=$(( (pct * BAR_WIDTH + 50) / 100 ))
+  out="#[fg=@BAR_COLOR_HEX@,bg=#000000]"
+  for (( i = 0; i < BAR_WIDTH; i++ )); do
+    [ "$i" -eq "$filled" ] && out+="#[fg=#555555,bg=#000000]"
+    out+=$([ "$i" -lt "$filled" ] && echo "$FILL_CHAR" || echo "$EMPTY_CHAR")
+  done
+  printf '%s#[fg=@BAR_COLOR_HEX@,bg=#000000]' "$out"
+}
+
+# The label's own capsule icon, in the slot that used to be a dead
+# "#[fg=#000000,bg=@PRIMARY@]" style with no text after it -- see
+# gpu-status.sh's matching comment.
+printf '#[fg=@PRIMARY@,bg=#000000]%s%s CPU ' "$CAP_LEFT" "$CAP_RIGHT"
+bar "$PCT"
+printf ' %3d%%  ' "$PCT"

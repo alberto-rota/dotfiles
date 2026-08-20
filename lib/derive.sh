@@ -10,10 +10,10 @@
 #
 # Reads (all optional, defaults below):
 #   PRIMARY SECONDARY MACHINE USER_NAME NEUTRAL_FG
-#   SHOW_HOST SHOW_GPU SHOW_TEMP SHOW_DISK DISK_MOUNTPOINT SHOW_SLURM SHOW_DATETIME
+#   SHOW_HOST SHOW_CPU SHOW_GPU SHOW_TEMP SHOW_DISK DISK_MOUNTPOINT SHOW_SLURM SHOW_DATETIME
 #   BAR_WIDTH BAR_COLOR
 #   OMP_ICON_MODE OMP_ICON OMP_TEXT OMP_CHEVRON_OK OMP_CHEVRON_ERROR
-#   CLAUDE_SWAP DASSH_SWAP LOGIN_START
+#   CLAUDE_SWAP OPENCODE_SWAP DASSH_SWAP LOGIN_START
 #   (and the superseded OMP_COLOR_ICON / OMP_COLOR_TEXT / OMP_COLOR_CHEVRON and
 #    HSL_LOGIN, which are migrated to the above when the new answers are absent)
 # Sets:
@@ -26,6 +26,7 @@
 #   CLAUDE_PRIMARY CLAUDE_SECONDARY CLAUDE_PRIMARY_SHIMMER CLAUDE_SECONDARY_SHIMMER
 #   CLAUDE_MSG_BG CLAUDE_MSG_BG_HOVER CLAUDE_MEMORY_BG CLAUDE_SELECTION_BG
 #   CLAUDE_TRACK_BG CLAUDE_BASH_BG
+#   OPENCODE_PRIMARY OPENCODE_SECONDARY OPENCODE_PRIMARY_SHIMMER OPENCODE_SECONDARY_SHIMMER
 #   DASSH_PRIMARY DASSH_ACCENT
 #   TMUX_STATUS_LEFT TMUX_STATUS_RIGHT HSL_STATUS_LEFT HSL_STATUS_RIGHT
 
@@ -502,6 +503,28 @@ derive() {
     CLAUDE_PRIMARY="$PRIMARY";   CLAUDE_SECONDARY="$SECONDARY"
   fi
 
+  # OpenCode's own two accents, same reasoning as Claude's CLAUDE_SWAP above.
+  # OpenCode's theme keys (primary, accent, borderActive, etc.) paint the TUI
+  # chrome, so which accent lands where matters the same way.
+  OPENCODE_SWAP="${OPENCODE_SWAP:-0}"
+  if [ "$OPENCODE_SWAP" = 1 ]; then
+    OPENCODE_PRIMARY="$SECONDARY"; OPENCODE_SECONDARY="$PRIMARY"
+  else
+    OPENCODE_PRIMARY="$PRIMARY";   OPENCODE_SECONDARY="$SECONDARY"
+  fi
+
+  # OpenCode's shimmer partners, same idea as Claude's: the two lighter variants
+  # the theme pulses to while working. Reuse the existing shimmer ramp -- it is
+  # the same accent pair, just mapped through OPENCODE_SWAP rather than
+  # CLAUDE_SWAP. Derived here rather than adding a second ramp line to awk,
+  # since the values are already on screen and just need the swap applied.
+  OPENCODE_PRIMARY_SHIMMER="$CLAUDE_PRIMARY_SHIMMER"
+  OPENCODE_SECONDARY_SHIMMER="$CLAUDE_SECONDARY_SHIMMER"
+  if [ "$OPENCODE_SWAP" = 1 ]; then
+    OPENCODE_PRIMARY_SHIMMER="$CLAUDE_SECONDARY_SHIMMER"
+    OPENCODE_SECONDARY_SHIMMER="$CLAUDE_PRIMARY_SHIMMER"
+  fi
+
   # dasshboard's own two colours. Its config calls them "primary" and "accent",
   # and install.sh now writes this machine's answer straight into them --
   # patching just those two keys of its [theme] table in place rather than
@@ -544,6 +567,7 @@ derive() {
   # space) rather than paint a visible box -- the hsl half below spells the same
   # spot correctly, since its layout differs slightly.
   TMUX_STATUS_RIGHT="#[fg=$PRIMARY,bg=#000000]${SEP}#[fg=#ffffff,bg=#00000t0] "
+  [ "${SHOW_CPU:-1}" = 1 ]   && TMUX_STATUS_RIGHT+='#(~/.tmux/cpu-status.sh)'
   [ "${SHOW_GPU:-1}" = 1 ]   && TMUX_STATUS_RIGHT+='#(~/.tmux/gpu-status.sh)'
   [ "${SHOW_DISK:-1}" = 1 ]  && TMUX_STATUS_RIGHT+='#(~/.tmux/disk-status.sh)'
   [ "${SHOW_SLURM:-1}" = 1 ] && TMUX_STATUS_RIGHT+='#(~/.tmux/slurm-status.sh)'
@@ -565,6 +589,7 @@ derive() {
   # ourselves, so that constraint is gone and both bars can name one path -- one
   # fewer way for them to drift, and one fewer copy of each script to link.
   HSL_STATUS_RIGHT="#[fg=$PRIMARY,bg=#000000]${SEP}#[fg=#ffffff,bg=#000000] "
+  [ "${SHOW_CPU:-1}" = 1 ]   && HSL_STATUS_RIGHT+='#(~/.tmux/cpu-status.sh)'
   [ "${SHOW_GPU:-1}" = 1 ]   && HSL_STATUS_RIGHT+='#(~/.tmux/gpu-status.sh)'
   [ "${SHOW_DISK:-1}" = 1 ]  && HSL_STATUS_RIGHT+='#(~/.tmux/disk-status.sh)'
   [ "${SHOW_SLURM:-1}" = 1 ] && HSL_STATUS_RIGHT+='#(~/.tmux/slurm-status.sh)'
@@ -603,6 +628,8 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
            CLAUDE_PRIMARY_SHIMMER CLAUDE_SECONDARY_SHIMMER \
            CLAUDE_MSG_BG CLAUDE_MSG_BG_HOVER CLAUDE_MEMORY_BG \
            CLAUDE_SELECTION_BG CLAUDE_TRACK_BG CLAUDE_BASH_BG \
+           OPENCODE_PRIMARY OPENCODE_SECONDARY \
+           OPENCODE_PRIMARY_SHIMMER OPENCODE_SECONDARY_SHIMMER \
            DASSH_PRIMARY DASSH_ACCENT \
            TMUX_STATUS_LEFT TMUX_STATUS_RIGHT HSL_STATUS_LEFT HSL_STATUS_RIGHT; do
     printf '%s=%s\n' "$v" "${!v}"

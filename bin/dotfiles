@@ -77,10 +77,13 @@ Usage: $SELF <command> [options]
                       Reuses the saved answers, so it does not prompt.
   reconfigure [opts]  install.sh --reconfigure: change the colours, machine name,
                       status-line components and tool selection.
-  update [opts]       Fast-forward the checkout, then install (no prompting).
-                      Stops with the reason if the checkout cannot be refreshed,
-                      rather than quietly re-rendering the old code;
-                      --keep-going installs from it as it stands anyway.
+  update [opts]       Update the checkout, then install (no prompting). Local
+                      edits are stashed and popped back, local commits the
+                      remote does not have are saved to a new branch first --
+                      neither blocks the update, neither is discarded. Stops
+                      with the reason only for a detached HEAD, no upstream, or
+                      an unreachable remote; --keep-going installs from the
+                      checkout as it stands anyway.
   tools [opts]        install.sh --tools-only: install the software, touch no config.
   plan                What a tools run would do on this machine, without doing it.
 
@@ -217,27 +220,34 @@ update_diagnose() {
 # Refresh the checkout, then install from it with no prompting -- the two halves
 # of "get this machine onto the current dotfiles".
 #
-# A REFUSED REFRESH IS FATAL HERE, and that is the whole point of the shape
-# below. This used to print a NOTE and install anyway, which made the one
-# command whose entire job is "get the new code" report success while rendering
-# the OLD code. On a machine whose tracked claude/settings.json carried a
-# one-line local edit, `git pull --ff-only` aborted, the NOTE scrolled past in a
-# screenful of install output, and the prompt, both status bars and even the
-# setup UI's live preview all stayed quietly on the previous commit -- through
-# repeated updates, because every one of them failed in exactly the same
-# invisible way. The plan-vs-run split lib/tools.sh goes to such lengths to
-# avoid has an update-vs-updated twin, and this was it. So: update either
-# updates or says it did not, out loud, with the reason and the remedy.
+# UPDATE ALWAYS FINISHES THE GIT SIDE, and that is the whole point of the shape
+# below. It did not always: a bare `git pull --ff-only` refuses the moment a
+# tracked file is edited here AND changed upstream, or the branch has local
+# commits the remote does not -- and for a while this CLI just gave up there,
+# on the theory that installing stale code while claiming to have updated is
+# worse than stopping. It still believes that; what changed is what counts as
+# "stale". Neither of those two causes has to leave the checkout stale: a
+# dirty tracked file can be stashed and reapplied, and local commits can be
+# saved to a side branch before the tracked branch is reset onto the remote's.
+# Nothing above ever discards anything -- see update_git() below for exactly
+# what is preserved and where.
 #
-# install.sh's own bootstrap deliberately does the opposite -- every failed
-# refresh there falls through to installing what is on disk -- and the two are
-# not in conflict. Its job is to get a machine set up AT ALL, where local edits
-# or no network are reasons to use what you have rather than to leave somebody
-# with nothing. Here there is already a working install to keep, so stopping
-# costs nothing and carrying on costs you the truth.
+# What is NOT papered over: detached HEAD, a branch with no upstream, and an
+# unreachable remote. None of those is "uncommitted changes" -- they are
+# structural, and guessing a branch to switch to (or waiting out a network
+# outage) is not this command's call to make. Those still stop, loudly, via
+# update_diagnose(), exactly as before.
 #
-# --keep-going restores the old behaviour for the one case that wants it: an
-# offline machine where you are re-rendering after editing a template and know
+# install.sh's own bootstrap deliberately falls through to installing what is
+# on disk after a failed refresh, and the two are not in conflict. Its job is
+# to get a machine set up AT ALL, where local edits or no network are reasons
+# to use what you have rather than to leave somebody with nothing. Here there
+# is already a working install to keep, so for the structural causes above,
+# stopping costs nothing and carrying on costs you the truth.
+#
+# --keep-going still means what it did: install from the checkout as it stands
+# even though one of those structural causes stopped the refresh -- for an
+# offline machine being re-rendered after a template edit, where you know
 # perfectly well the checkout is stale.
 #
 # Only the git case is handled here on purpose. A checkout that came from the
@@ -261,24 +271,7 @@ cmd_update() {
   done
 
   if [ -d "$DOTFILES/.git" ] && command -v git >/dev/null 2>&1; then
-    echo "Fast-forwarding $DOTFILES ..."
-    if ! git -C "$DOTFILES" pull --ff-only; then
-      echo ""
-      echo "Could not fast-forward $DOTFILES."
-      update_diagnose
-      if [ "$keep" -eq 0 ]; then
-        echo ""
-        echo "  NOTHING WAS INSTALLED. The checkout is still on"
-        echo "  $(git -C "$DOTFILES" log --oneline -1 2>/dev/null || echo '?')"
-        echo "  and installing from it would have looked like an update without"
-        echo "  being one. Fix the above and re-run, or if that is what you want:"
-        echo "    $SELF update --keep-going   # re-render from the checkout as it is"
-        echo "    $SELF install               # the same, without trying to refresh"
-        exit 1
-      fi
-      echo ""
-      echo "Continuing anyway (--keep-going): installing from the checkout as it stands."
-    fi
+    update_git "$keep"
   else
     echo "NOTE: $DOTFILES is not a git checkout, so there is nothing to pull."
     echo "      To refresh a tarball checkout in place:"
@@ -287,6 +280,136 @@ cmd_update() {
   fi
   echo ""
   exec bash "$DOTFILES/install.sh" -y ${args[@]+"${args[@]}"}
+}
+
+# The structural stops: detached HEAD or no upstream (checked before ever
+# touching the network or the working tree, since neither is fixable by
+# stashing or branching) and, later, whatever update_diagnose() itself
+# recognises. Shared by every early-return in update_git() below.
+update_fail() {
+  local keep="$1"
+  echo ""
+  echo "Could not update $DOTFILES."
+  update_diagnose
+  if [ "$keep" -eq 0 ]; then
+    echo ""
+    echo "  NOTHING WAS INSTALLED. The checkout is still on"
+    echo "  $(git -C "$DOTFILES" log --oneline -1 2>/dev/null || echo '?')"
+    echo "  and installing from it would have looked like an update without"
+    echo "  being one. Fix the above and re-run, or if that is what you want:"
+    echo "    $SELF update --keep-going   # re-render from the checkout as it is"
+    echo "    $SELF install               # the same, without trying to refresh"
+    exit 1
+  fi
+  echo ""
+  echo "Continuing anyway (--keep-going): installing from the checkout as it stands."
+}
+
+# Bring $DOTFILES's tracked branch level with its upstream, working around the
+# two things that otherwise refuse a fast-forward on their own:
+#
+#   * a dirty working tree -- stashed (tracked AND untracked, `-u`) before the
+#     update and popped back afterwards, so a local edit is never in the way
+#     of a fast-forward and is never discarded to get one either;
+#   * local commits the remote does not have -- saved to a new branch
+#     (`dotfiles-update/<branch>-<timestamp>`) before the tracked branch is
+#     reset onto the remote's, so "cannot fast-forward" becomes "these commits
+#     are now over there" rather than "stopped".
+#
+# If reapplying the stash conflicts with what was just pulled, the stash is
+# NOT dropped (`git stash pop` never drops on conflict) and install.sh is NOT
+# run: some of the conflicted files may be symlinked straight into $HOME (e.g.
+# claude/settings.json), so rendering from a tree that still has conflict
+# markers in it would carry them into the live config. That is the one case
+# left where this stops and asks a human -- a genuine textual conflict between
+# a local edit and the incoming change, which no amount of stashing or
+# branching can resolve for you.
+update_git() {
+  local keep="$1" branch up stashed=0 ahead behind saved
+
+  branch="$(git -C "$DOTFILES" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
+  if [ "$branch" = HEAD ] || [ "$branch" = '?' ]; then
+    update_fail "$keep"; return
+  fi
+  # `|| true`: no upstream is a normal state, not an error, under set -e.
+  up="$(git -C "$DOTFILES" rev-parse --abbrev-ref '@{u}' 2>/dev/null || true)"
+  if [ -z "$up" ]; then
+    update_fail "$keep"; return
+  fi
+
+  echo "Fetching $DOTFILES ..."
+  if ! git -C "$DOTFILES" fetch origin; then
+    update_fail "$keep"; return
+  fi
+  # The fetch above already moved the remote-tracking ref, so @{u} below reads
+  # as current without a second round trip to the remote.
+
+  if [ -n "$(git -C "$DOTFILES" status --porcelain 2>/dev/null || true)" ]; then
+    echo "Uncommitted changes in $DOTFILES -- stashing them (tracked and untracked) so they cannot block the update:"
+    git -C "$DOTFILES" status --short 2>/dev/null | sed 's/^/  /' || true
+    if git -C "$DOTFILES" stash push -u -m "dotfiles-update $(date '+%Y-%m-%d %H:%M:%S')"; then
+      stashed=1
+    else
+      echo "  stash failed; leaving the working tree as it is and trying the update anyway."
+    fi
+  fi
+
+  ahead="$(git -C "$DOTFILES" rev-list --count "$up..$branch" 2>/dev/null || echo 0)"
+  behind="$(git -C "$DOTFILES" rev-list --count "$branch..$up" 2>/dev/null || echo 0)"
+  if [ "$ahead" -gt 0 ] && [ "$behind" -gt 0 ]; then
+    saved="dotfiles-update/$branch-$(date '+%Y%m%d-%H%M%S')"
+    echo "'$branch' has $ahead local commit(s) '$up' does not, and '$up' has $behind '$branch' does not -- these cannot fast-forward either way."
+    echo "Saving the local commits to '$saved' before catching '$branch' up to '$up':"
+    if ! git -C "$DOTFILES" branch "$saved" "$branch"; then
+      [ "$stashed" -eq 1 ] && git -C "$DOTFILES" stash pop >/dev/null 2>&1
+      update_fail "$keep"; return
+    fi
+    echo "  git -C $DOTFILES log --oneline $up..$saved"
+    if ! git -C "$DOTFILES" reset --hard "$up" >/dev/null; then
+      [ "$stashed" -eq 1 ] && git -C "$DOTFILES" stash pop >/dev/null 2>&1
+      update_fail "$keep"; return
+    fi
+  elif [ "$ahead" -eq 0 ]; then
+    # ahead>0 with behind=0 means '$branch' is already a strict superset of
+    # '$up' -- nothing to fast-forward, and this branch is skipped entirely so
+    # local commits are never reset away for no reason.
+    if ! git -C "$DOTFILES" merge --ff-only "$up" >/dev/null; then
+      [ "$stashed" -eq 1 ] && git -C "$DOTFILES" stash pop >/dev/null 2>&1
+      update_fail "$keep"; return
+    fi
+  fi
+
+  if [ "$stashed" -eq 1 ]; then
+    echo "Reapplying the stashed changes ..."
+    if git -C "$DOTFILES" stash pop; then
+      echo "  applied cleanly."
+    else
+      local unmerged
+      unmerged="$(git -C "$DOTFILES" diff --name-only --diff-filter=U 2>/dev/null || true)"
+      echo ""
+      if [ -n "$unmerged" ]; then
+        echo "  Reapplying them conflicted with the update. Nothing was lost -- the"
+        echo "  stash is still there (git -C $DOTFILES stash list) -- but these files"
+        echo "  now have conflict markers in the checkout, and some may be symlinked"
+        echo "  straight into \$HOME, so nothing was installed. Resolve them, then"
+        echo "  run '$SELF install':"
+        printf '    %s\n' $unmerged
+      else
+        # No unmerged path -- `stash pop` refused outright rather than leaving a
+        # 3-way merge behind, most likely because a file the update just created
+        # or restored sits where a stashed one wants to go (git's message above
+        # names it). Nothing was lost either way: the stash is untouched.
+        echo "  Reapplying them failed (see the git error above), most likely because"
+        echo "  a file the update just brought in collides with one that was"
+        echo "  stashed. Nothing was lost -- the stash is still there"
+        echo "  (git -C $DOTFILES stash list; 'git -C $DOTFILES stash show -p' to"
+        echo "  see what is in it) -- but nothing was installed. Move the colliding"
+        echo "  path aside, pop it again, then run '$SELF install'."
+      fi
+      echo "  Once you are happy with the result:  git -C $DOTFILES stash drop"
+      exit 1
+    fi
+  fi
 }
 
 # Every backup still on disk, read off the manifest -- the same file reset.sh

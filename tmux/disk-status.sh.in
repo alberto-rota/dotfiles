@@ -21,6 +21,14 @@ MOUNTPOINT="@DISK_MOUNTPOINT@"
 BAR_WIDTH=@BAR_WIDTH@
 FILL_CHAR="▰"
 EMPTY_CHAR="▱"
+# The capsule icon the label leads with -- the same U+E0BA/U+E0BC pair
+# gpu-status.sh's label carries, written as UTF-8 bytes rather than \u escapes
+# (bash 4.2+ only, and this runs under whatever /bin/bash is, which on macOS
+# is 3.2) for the reason derive.sh's own CAP gives: a PUA codepoint pasted
+# raw into a shell script is exactly what an editor or terminal in between
+# silently turns into nothing.
+CAP_LEFT=$'\xee\x82\xba'
+CAP_RIGHT=$'\xee\x82\xbc'
 
 # Total/used/capacity off ONE df call. `-k` is 1024-byte blocks on both GNU
 # and BSD df, and `-P` is one line per filesystem on both too (it exists to
@@ -57,6 +65,9 @@ gib() {
   awk -v k="$1" 'BEGIN { g = k / 1024 / 1024; printf (g < 10 ? "%.1f" : "%.0f"), g }'
 }
 
-printf '#[fg=#000000,bg=@PRIMARY@]#[fg=@PRIMARY@,bg=#000000] DISK '
+# The label's own capsule icon, in the slot that used to be a dead
+# "#[fg=#000000,bg=@PRIMARY@]" style with no text after it -- see
+# gpu-status.sh's matching comment.
+printf '#[fg=@PRIMARY@,bg=#000000]%s%s DISK ' "$CAP_LEFT" "$CAP_RIGHT"
 bar "$PCT"
 printf ' %3d%%  %s/%sG ' "$PCT" "$(gib "$USED_KB")" "$(gib "$TOTAL_KB")"

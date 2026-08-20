@@ -21,10 +21,10 @@ SHOW_TEMP=@SHOW_TEMP@
 BAR_WIDTH=@BAR_WIDTH@
 FILL_CHAR="▰"
 EMPTY_CHAR="▱"
-# The temperature reading's capsule icon -- the bars below are now a plain run
-# of FILL_CHAR/EMPTY_CHAR cells, no end caps.
-# Written as \u escapes because they are private-use glyphs that do not survive
-# every copy/paste; U+E0B6/U+E0B4 are Powerline Extra's half-circle pair.
+# The capsule icon the label leads with, and the temperature reading further
+# along reuses it too (in its own fixed peach -- see below). The same
+# U+E0BA/U+E0BC pair oh-my-posh's machine segment and derive.sh's CAP use --
+# Powerline Extra's half-circle caps.
 CAP_LEFT=$''
 CAP_RIGHT=$''
 
@@ -84,7 +84,12 @@ gib() {
 LABEL="GPU"
 [ "${NGPU:-1}" -gt 1 ] && LABEL="GPU×$NGPU"
 
-printf '#[fg=#000000,bg=@PRIMARY@]#[fg=@PRIMARY@,bg=#000000] %s ' "$LABEL"
+# The label's own capsule icon -- the same U+E0BA/U+E0BC pair the temperature
+# reading below carries, in the label's colour rather than temperature's fixed
+# peach, in the slot that used to be a dead "#[fg=#000000,bg=@PRIMARY@]" style
+# with no text after it (the same trick slurm-status.sh's job-state glyph
+# uses on ITS pill's own leading dead directive).
+printf '#[fg=@PRIMARY@,bg=#000000]%s%s %s ' "$CAP_LEFT" "$CAP_RIGHT" "$LABEL"
 bar "$UTIL"
 printf ' %3d%%  ' "$UTIL"
 bar "$MEM_PCT"
